@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Guitar Studio</title>
+<meta name="description" content="Guitar practice studio: note trainer, fretboard &amp; chords, theory, practice log, tuner, metronome and songs.">
+<meta name="theme-color" content="#1d2026" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Guitar Studio">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">🎸 Guitar Studio</div>
+  <nav class="tabs">
+    <button data-tab="trainer" class="active">Note Trainer</button>
+    <button data-tab="fretboard">Fretboard &amp; Chords</button>
+    <button data-tab="theory">Theory</button>
+    <button data-tab="practice">Practice</button>
+    <button data-tab="songs">Songs</button>
+  </nav>
+  <div class="topbar-right">
+    <label class="toggle"><input type="checkbox" id="soundOn" checked> 🔊</label>
+    <select id="tonePreset" title="Guitar tone"></select>
+    <button class="btn small ghost" id="toneTest" title="Play a test chord">▶</button>
+    <label class="toggle"><input type="checkbox" id="useFlats"> ♭ names</label>
+  </div>
+</header>
+
+<main>
+  <!-- ================= NOTE TRAINER ================= -->
+  <section id="tab-trainer" class="tab active">
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Fretboard note trainer</h2>
+        <div class="controls">
+          <label>Mode
+            <select id="trMode">
+              <option value="find">Find the note</option>
+              <option value="name">Name the note</option>
+              <option value="learn">Learn / explore</option>
+            </select>
+          </label>
+          <label class="toggle"><input type="checkbox" id="trNaturals" checked> Naturals only</label>
+          <label>Frets <select id="trFrets"><option value="12">0–12</option><option value="15">0–15</option></select></label>
+          <button class="btn small ghost" id="trSkip">Skip</button>
+        </div>
+      </div>
+      <div class="chips" id="trStrings"></div>
+      <div class="tr-prompt" id="trPrompt"></div>
+      <div id="trFretboard" class="fretboard-host"></div>
+      <div id="trAnswers" class="tr-answers"></div>
+      <div class="tr-session" id="trSession"></div>
+      <div class="hint" id="trTip"></div>
+    </div>
+    <div class="two-col">
+      <div class="panel">
+        <h2>Level path</h2>
+        <p class="hint">Pass a level with ≥90% over your last 20 answers (avg under 5 s; 3 s for the timed level). Click a level to start it. <span id="trNext"></span></p>
+        <div id="trLevels"></div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h2>Heat map</h2><button class="btn small ghost" id="trReset">Reset stats</button></div>
+        <div id="trHeat"></div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= FRETBOARD & CHORDS ================= -->
+  <section id="tab-fretboard" class="tab">
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Fretboard</h2>
+        <div class="controls">
+          <label>Overlay
+            <select id="fbMode">
+              <option value="none">None</option>
+              <option value="scale" selected>Scale</option>
+              <option value="chord">Chord tones</option>
+            </select>
+          </label>
+          <label>Root <select id="fbRoot"></select></label>
+          <label id="fbScaleWrap">Scale <select id="fbScale"></select></label>
+          <label id="fbViewWrap">View
+            <select id="fbView">
+              <option value="neck">Whole neck</option>
+              <option value="box">Position box</option>
+              <option value="3nps">3 notes / string</option>
+              <option value="string">Single string</option>
+            </select>
+          </label>
+          <span id="fbPosWrap" class="hidden"><button class="btn small ghost" id="fbPrev">◀</button> <span id="fbPosLabel" class="hint" style="margin:0"></span> <button class="btn small ghost" id="fbNext">▶</button></span>
+          <label id="fbCompareWrap">Compare <select id="fbCompare"></select></label>
+          <label id="fbTargetWrap">Target <select id="fbTarget"></select></label>
+          <button id="fbPlay" class="btn small">▶ Play</button>
+          <label id="fbChordWrap" class="hidden">Chord <select id="fbChord"></select></label>
+          <label>Labels
+            <select id="fbLabels">
+              <option value="notes">Note names</option>
+              <option value="intervals">Intervals</option>
+              <option value="none">None</option>
+            </select>
+          </label>
+          <button id="fbClear" class="btn small">Clear picked notes</button>
+        </div>
+      </div>
+      <p class="hint">Click any fret to pick notes you're fretting — the identifier below tells you what chord it is. The overlay shows scale/chord tones across the neck (root in orange).</p>
+      <div id="fretboardHost" class="fretboard-host"></div>
+      <div class="two-col">
+        <div>
+          <h3>What am I playing?</h3>
+          <div id="identify" class="identify"><em>Pick some notes on the fretboard…</em></div>
+        </div>
+        <div>
+          <h3>Scale info</h3>
+          <div id="scaleInfo" class="scale-info"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Chord voicings</h2>
+        <div class="controls">
+          <label>Root <select id="vRoot"></select></label>
+          <label>Type <select id="vType"></select></label>
+          <label class="toggle"><input type="checkbox" id="vRootBass" checked> Root in bass</label>
+          <label>Diagram labels
+            <select id="vLabels">
+              <option value="notes">Notes</option>
+              <option value="intervals">Intervals</option>
+              <option value="">None</option>
+            </select>
+          </label>
+          <button id="vShowAll" class="btn small">More per position</button>
+        </div>
+      </div>
+      <div id="vFormula" class="formula"></div>
+      <div id="voicings" class="voicing-grid"></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Chords in a key &amp; pairings</h2>
+        <div class="controls">
+          <label>Key <select id="kRoot"></select></label>
+          <label>Scale <select id="kScale"></select></label>
+        </div>
+      </div>
+      <p class="hint">Diatonic chords for the key. Click a chord to load its voicings above and light it up on the fretboard. Below: progressions that live in this key.</p>
+      <div id="keyChords" class="key-chords"></div>
+      <div id="progressions" class="progressions"></div>
+    </div>
+  </section>
+
+  <!-- ================= THEORY ================= -->
+  <section id="tab-theory" class="tab">
+    <div class="two-col">
+      <div class="panel">
+        <h2>Circle of fifths</h2>
+        <p class="hint">Click a key. Outer ring = major, inner = relative minor. Neighbours share 6 of 7 notes — that's why moving one step around the circle sounds smooth, and why IV and V are the "closest" chords to I.</p>
+        <div id="circleHost" class="circle-host"></div>
+      </div>
+      <div class="panel">
+        <h2 id="keyTitle">Key of C major</h2>
+        <div id="keyDetail" class="key-detail"></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>CAGED system</h2>
+        <div class="controls">
+          <label>Chord <select id="cagedRoot"></select></label>
+          <label><select id="cagedQual"><option value="maj">Major</option><option value="min">Minor (A/E/D shapes)</option></select></label>
+        </div>
+      </div>
+      <p class="hint">Any major chord can be played in 5 shapes that tile the whole neck: <b>C, A, G, E, D</b> — in that order going up. Each shape connects to the next (they share notes at the boundary). Learn the shapes ⇒ you know where the chord tones are everywhere ⇒ your solos land on chord tones. The pentatonic/major scale "boxes" sit on top of each shape.</p>
+      <div id="cagedDiagrams" class="voicing-grid"></div>
+      <div id="cagedFretboard" class="fretboard-host"></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Modes of the major scale</h2>
+        <div class="controls"><label>Parent key <select id="modesRoot"></select></label></div>
+      </div>
+      <p class="hint">Same 7 notes, different home base. Start the C major scale on D and treat D as home — that's D Dorian. The "flavor" comes from where the half-steps fall relative to the new root. Click a row to put it on the fretboard.</p>
+      <div id="modesTable"></div>
+    </div>
+
+    <div class="two-col">
+      <div class="panel">
+        <h2>Intervals</h2>
+        <table class="ref-table" id="intervalsTable"></table>
+      </div>
+      <div class="panel">
+        <h2>Chord formulas</h2>
+        <table class="ref-table" id="chordFormulaTable"></table>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h2>Quick refreshers</h2>
+      <div class="cards" id="refresherCards"></div>
+    </div>
+  </section>
+
+  <!-- ================= PRACTICE ================= -->
+  <section id="tab-practice" class="tab">
+    <div class="three-col">
+      <div class="panel">
+        <h2>Timer &amp; metronome</h2>
+        <div class="timer-row">
+          <div class="timer" id="timerDisplay">00:00</div>
+          <div class="btn-row">
+            <button class="btn" id="timerStart">Start</button>
+            <button class="btn ghost" id="timerReset">Reset</button>
+          </div>
+        </div>
+        <div class="metro">
+          <div class="metro-row">
+            <button class="btn" id="metroToggle">▶ Metronome</button>
+            <input type="number" id="metroBpm" min="30" max="260" value="90"> <span>bpm</span>
+            <select id="metroSig"><option value="4">4/4</option><option value="3">3/4</option><option value="6">6/8</option><option value="0">no accent</option></select>
+          </div>
+          <input type="range" id="metroSlider" min="30" max="260" value="90">
+          <div class="metro-beats" id="metroBeats"></div>
+        </div>
+        <div class="tuner">
+          <div class="metro-row"><button class="btn" id="tnToggle">🎤 Start tuner</button><label class="hint" style="margin:0">A4 <input type="number" id="tnA4" value="440" min="415" max="466" style="width:4.5rem"></label></div>
+          <div class="tn-display">
+            <svg viewBox="0 0 300 150" class="tn-gauge">
+              <path d="M30,140 A120,120 0 0 1 270,140" fill="none" stroke="var(--border)" stroke-width="10"/>
+              <path d="M138,22 A120,120 0 0 1 162,22" fill="none" stroke="var(--ok)" stroke-width="10"/>
+              <g stroke="var(--muted)" stroke-width="1.5"><line x1="150" y1="20" x2="150" y2="32"/><line x1="66" y1="56" x2="74" y2="64"/><line x1="234" y1="56" x2="226" y2="64"/><line x1="30" y1="140" x2="42" y2="140"/><line x1="270" y1="140" x2="258" y2="140"/></g>
+              <text x="48" y="128" font-size="10" fill="var(--muted)">-50</text><text x="236" y="128" font-size="10" fill="var(--muted)">+50</text>
+              <line id="tnNeedle" x1="150" y1="140" x2="150" y2="38" stroke="var(--accent)" stroke-width="3" stroke-linecap="round"/>
+              <circle cx="150" cy="140" r="6" fill="var(--accent)"/>
+            </svg>
+            <div class="tn-read"><span id="tnNote">—</span><sub id="tnOct"></sub> <span id="tnCents"></span><div class="hint" style="margin:0"><span id="tnDir">play a note</span> · <span id="tnHz"></span></div></div>
+          </div>
+          <div class="chips" id="tnStrings"></div>
+          <div class="hint">Click a string chip to hear its reference pitch. Green = within 3¢.</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Log a session</h2>
+        <form id="logForm" class="form">
+          <div class="form-row">
+            <label>Date <input type="date" id="logDate" required></label>
+            <label>Minutes <input type="number" id="logMinutes" min="1" max="600" required></label>
+          </div>
+          <label>Focus areas <div class="chips" id="logCats"></div></label>
+          <label>Song / material <input type="text" id="logSong" list="songList" placeholder="e.g. Slow Dancing in a Burning Room"></label>
+          <datalist id="songList"></datalist>
+          <div class="form-row">
+            <label>Tempo (bpm) <input type="number" id="logTempo" min="20" max="300"></label>
+            <label>Feel <select id="logRating"><option value="">—</option><option>😩 rough</option><option>😐 ok</option><option>🙂 good</option><option>🔥 great</option></select></label>
+          </div>
+          <label>Notes <textarea id="logNotes" rows="2" placeholder="What did you work on? What clicked? What to hit next time?"></textarea></label>
+          <button class="btn" type="submit">Save session</button>
+        </form>
+      </div>
+
+      <div class="panel">
+        <h2>Today's plan</h2>
+        <p class="hint">A quick 25-minute session generated from your goals and song list. Regenerate for a different mix.</p>
+        <div id="planHost" class="plan"></div>
+        <button class="btn ghost small" id="planRegen">Regenerate</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Progress</h2>
+        <div class="stats" id="stats"></div>
+      </div>
+      <div id="chartHost" class="chart-host"></div>
+      <div id="catChart" class="chart-host"></div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Practice videos</h2>
+        <div class="controls">
+          <span id="vidCount" class="hint"></span>
+          <button class="btn small ghost" id="vidPickFolder">Link Dropbox folder</button>
+          <button class="btn small ghost" id="vidRefresh">Refresh</button>
+        </div>
+      </div>
+      <div class="nudge" id="vidNudge"></div>
+      <div id="vidFolderStatus" class="hint"></div>
+      <div class="two-col">
+        <div>
+          <video id="vidPreview" playsinline style="width:100%;background:#000;border-radius:8px;aspect-ratio:16/9"></video>
+          <div class="btn-row" style="margin-top:.5rem;align-items:center">
+            <button class="btn" id="vidRecBtn">● Record</button>
+            <span class="timer" id="vidRecTime" style="font-size:1.2rem">00:00</span>
+            <label class="btn ghost small">Import video(s)<input type="file" id="vidImport" accept="video/*" multiple class="vh"></label>
+          </div>
+          <div class="form">
+            <label>Song / focus <input type="text" id="vidSong" list="songList" placeholder="what's this take about?"></label>
+            <label>Note to future you <input type="text" id="vidNotes" placeholder="e.g. trying the intro at 60 bpm"></label>
+          </div>
+        </div>
+        <div id="vidList" class="vid-list"></div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Session history</h2>
+        <div class="controls">
+          <button class="btn small ghost" id="exportBtn">Export JSON</button>
+          <label class="btn small ghost">Import JSON<input type="file" id="importFile" accept="application/json,.json" class="vh"></label>
+        </div>
+      </div>
+      <div id="historyHost"></div>
+    </div>
+  </section>
+
+  <!-- ================= SONGS ================= -->
+  <section id="tab-songs" class="tab">
+    <div class="panel">
+      <div class="panel-head">
+        <h2>Repertoire</h2>
+        <button class="btn" id="songAdd">+ Add song</button>
+      </div>
+      <p class="hint">Track what you want to learn, what you're working on, and what's gig-ready. Click a song to edit. Statuses: <b>Want</b> → <b>Learning</b> → <b>Polishing</b> → <b>Can play</b>.</p>
+      <div id="songBoard" class="song-board"></div>
+    </div>
+    <div class="panel">
+      <h2>Resources</h2>
+      <div id="resources" class="cards"></div>
+    </div>
+  </section>
+</main>
+
+<dialog id="songDialog">
+  <form method="dialog" id="songForm" class="form">
+    <h3 id="songDialogTitle">Add song</h3>
+    <label>Title <input type="text" id="sTitle" required></label>
+    <label>Artist <input type="text" id="sArtist"></label>
+    <div class="form-row">
+      <label>Status <select id="sStatus"><option>Want</option><option>Learning</option><option>Polishing</option><option>Can play</option></select></label>
+      <label>Key <input type="text" id="sKey" placeholder="e.g. C#m"></label>
+      <label>Tuning/Capo <input type="text" id="sTuning" placeholder="Standard, capo 2…"></label>
+    </div>
+    <div class="form-row">
+      <label>Target tempo <input type="number" id="sTempo"></label>
+      <label>Current tempo <input type="number" id="sCurTempo"></label>
+    </div>
+    <label>Sections / parts to nail <textarea id="sSections" rows="2" placeholder="Intro riff, verse fingerpicking, solo…"></textarea></label>
+    <label>Notes <textarea id="sNotes" rows="3"></textarea></label>
+    <label>Links (one per line) <textarea id="sLinks" rows="2" placeholder="https://…"></textarea></label>
+    <div class="btn-row">
+      <button class="btn" value="save">Save</button>
+      <button class="btn ghost" value="cancel" type="button" id="songCancel">Cancel</button>
+      <button class="btn danger" value="delete" type="button" id="songDelete">Delete</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="js/music.js"></script>
+<script src="js/voicings.js"></script>
+<script src="js/tone.js"></script>
+<script src="js/store.js"></script>
+<script src="js/fretboard-ui.js"></script>
+<script src="js/theory-ui.js"></script>
+<script src="js/practice-ui.js"></script>
+<script src="js/songs-ui.js"></script>
+<script src="js/trainer-ui.js"></script>
+<script src="js/videos-ui.js"></script>
+<script src="js/tuner-ui.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>

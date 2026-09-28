@@ -1,0 +1,14 @@
+# OS junk
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Local-only files (kept in Dropbox, not in the repo)
+*.command
+profile.md
+Practice Videos/
+
+# Video files never go in the repo
+*.mp4
+*.mov
+*.webm
