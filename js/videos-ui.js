@@ -15,23 +15,30 @@ window.VideosUI = (() => {
   let files=[];   // videos in the linked folder: {name,handle,size,modified}
   let local=[];   // videos held in memory this session (no folder linked): {name,file,size,modified,local:true,saved}
   let shown=[];   // what the list currently renders (local + folder), indexed by data-i
+  let needsReconnect=false; // folder handle restored but permission must be re-granted by a tap
+  const liveURLs=new Set(); // object URLs of opened videos; revoked whenever the list re-renders
 
   // ---- IndexedDB for the directory handle ----
-  function idb(){ return new Promise((res,rej)=>{ const r=indexedDB.open('guitarStudio',1); r.onupgradeneeded=()=>r.result.createObjectStore('kv'); r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error); }); }
+  // v2 adds a 'pending' store: unsaved in-app recordings survive the app being closed (iOS has no beforeunload).
+  function idb(){ return new Promise((res,rej)=>{ const r=indexedDB.open('guitarStudio',2); r.onupgradeneeded=()=>{ const db=r.result; if(!db.objectStoreNames.contains('kv')) db.createObjectStore('kv'); if(!db.objectStoreNames.contains('pending')) db.createObjectStore('pending'); }; r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error); }); }
+  async function pendingPut(name,rec){ try{ const db=await idb(); await new Promise((res,rej)=>{ const tx=db.transaction('pending','readwrite'); tx.objectStore('pending').put(rec,name); tx.oncomplete=res; tx.onerror=()=>rej(tx.error); tx.onabort=()=>rej(tx.error); }); return true; }catch(e){ console.warn('Could not keep recording in browser storage',e); return false; } }
+  async function pendingDel(name){ try{ const db=await idb(); await new Promise((res)=>{ const tx=db.transaction('pending','readwrite'); tx.objectStore('pending').delete(name); tx.oncomplete=res; tx.onerror=res; }); }catch(e){} }
+  async function pendingAll(){ try{ const db=await idb(); return await new Promise((res,rej)=>{ const out=[]; const tx=db.transaction('pending'); const c=tx.objectStore('pending').openCursor(); c.onsuccess=()=>{ const cur=c.result; if(cur){ out.push([cur.key,cur.value]); cur.continue(); } else res(out); }; c.onerror=()=>rej(c.error); }); }catch(e){ return []; } }
   async function kvSet(k,v){ const db=await idb(); return new Promise((res,rej)=>{ const tx=db.transaction('kv','readwrite'); tx.objectStore('kv').put(v,k); tx.oncomplete=res; tx.onerror=()=>rej(tx.error); }); }
   async function kvGet(k){ const db=await idb(); return new Promise((res,rej)=>{ const tx=db.transaction('kv'); const r=tx.objectStore('kv').get(k); r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error); }); }
 
   const meta=()=>{ const d=S.get(); if(!d.videos) d.videos={}; return d.videos; }; // name -> {song,notes,reviewed,date}
-  const esc=(s)=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+  const esc=S.esc;
 
   async function pickFolder(){
     if(!hasFS) return;
     try{ dirHandle=await window.showDirectoryPicker({mode:'readwrite', id:'practice-videos'}); await kvSet('videoDir',dirHandle); await refresh(); }
     catch(e){ if(e.name!=='AbortError') alert('Could not open folder: '+e.message); }
   }
-  async function ensurePermission(){
+  async function ensurePermission(ask=true){
     if(!dirHandle) return false;
     const q=await dirHandle.queryPermission({mode:'readwrite'}); if(q==='granted') return true;
+    if(!ask) return false; // requestPermission needs a user gesture; the caller shows a Reconnect button instead
     const r=await dirHandle.requestPermission({mode:'readwrite'}); return r==='granted';
   }
   async function listFiles(){
@@ -39,8 +46,8 @@ window.VideosUI = (() => {
     for await (const [name,h] of dirHandle.entries()){ if(h.kind==='file' && /\.(mp4|mov|webm|m4v|mkv)$/i.test(name)){ const f=await h.getFile(); files.push({name,handle:h,size:f.size,modified:f.lastModified}); } }
     files.sort((a,b)=>b.modified-a.modified);
   }
-  async function refresh(){
-    if(dirHandle){ try{ if(await ensurePermission()) await listFiles(); }catch(e){ console.warn(e); } }
+  async function refresh(fromTap=true){
+    if(dirHandle){ try{ if(await ensurePermission(fromTap!==false)){ needsReconnect=false; await listFiles(); } else needsReconnect=true; }catch(e){ console.warn(e); needsReconnect=true; } }
     render();
   }
 
@@ -76,6 +83,7 @@ window.VideosUI = (() => {
     const d=new Date(); const stamp=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}_${String(d.getHours()).padStart(2,'0')}${String(d.getMinutes()).padStart(2,'0')}`;
     const name=`${stamp}${song?'_'+song.replace(/ /g,'-'):''}.${ext}`;
     meta()[name]={song:$('#vidSong').value.trim(), notes:$('#vidNotes').value.trim(), date:stamp.slice(0,10), reviewed:false}; S.save();
+    try{ window.App.toast('Recording saved'+(dirHandle&&!needsReconnect?' to folder':'')); }catch(e){}
     $('#vidNotes').value='';
     await store(name,blob,{fresh:true});
     await refresh();
@@ -96,11 +104,12 @@ window.VideosUI = (() => {
     // Desktop browsers without folder linking: download right away (as before). On iPhone/iPad the
     // Share sheet needs a fresh tap, so the video waits in the list with a Save button instead.
     if(fresh && !S.isIOS){ await S.saveFile(blob,name); local[0].saved=true; }
+    if(fresh && !local[0].saved) await pendingPut(name,{blob:file,modified:local[0].modified});
     return 'session';
   }
   async function importFiles(list){
     for(const f of list){
-      const m=meta(); if(!m[f.name]) m[f.name]={song:$('#vidSong').value.trim(),notes:'',date:new Date(f.lastModified||Date.now()).toISOString().slice(0,10),reviewed:false};
+      const m=meta(); if(!m[f.name]) m[f.name]={song:$('#vidSong').value.trim(),notes:'',date:S.localDate(f.lastModified||Date.now()),reviewed:false};
       await store(f.name,f); // imported files already exist on the device, so no auto-download
     }
     S.save(); await refresh();
@@ -110,6 +119,7 @@ window.VideosUI = (() => {
   function daysSince(ts){ return Math.floor((Date.now()-ts)/864e5); }
   function render(){
     const m=meta();
+    liveURLs.forEach(u=>URL.revokeObjectURL(u)); liveURLs.clear(); // any open player is about to be replaced
     shown=[...local, ...files.filter(f=>!local.some(l=>l.name===f.name))].sort((a,b)=>b.modified-a.modified);
     // nudge
     const last = shown.length? shown[0].modified : (Object.values(m).map(x=>new Date(x.date).getTime()).sort((a,b)=>b-a)[0]||null);
@@ -130,7 +140,7 @@ window.VideosUI = (() => {
         ? `On iPhone/iPad the app can't link a folder. Recordings and imports stay in the list below until you close the app — open one and tap <b>Save video</b> (choose <b>Save Video</b> for Photos, or <b>Save to Files</b> → Dropbox → Practice Videos). Folder linking works in Chrome/Edge on a computer.`
         : `This browser can't link a folder (Chrome/Edge on a computer can). Recordings download automatically — drop them into your Dropbox <b>Practice Videos</b> folder. Imports are listed below for this session.`);
     } else {
-      notes.push(dirHandle? `Linked to <b>${esc(dirHandle.name)}</b> ✓` : `Link your Dropbox <b>Practice Videos</b> folder to save recordings and imports straight into Dropbox (synced to your phone too).`);
+      notes.push(dirHandle? (needsReconnect? `Linked to <b>${esc(dirHandle.name)}</b> — the browser needs your OK again to read it. <button type="button" class="btn small" id="vidReconnect">Reconnect folder</button>` : `Linked to <b>${esc(dirHandle.name)}</b> ✓`) : `Link your Dropbox <b>Practice Videos</b> folder to save recordings and imports straight into Dropbox (synced to your phone too).`);
     }
     if(!hasRec){
       $('#vidRecBtn').disabled=true; $('#vidRecBtn').title='Recording not supported in this browser';
@@ -139,17 +149,19 @@ window.VideosUI = (() => {
         : `This browser can't record video in the page — use <b>Import video(s)</b> instead${S.isIOS?' (it can open the camera directly)':''}.`);
     }
     $('#vidFolderStatus').innerHTML=notes.map(n=>`<div>${n}</div>`).join('');
+    const rc=$('#vidReconnect'); if(rc) rc.addEventListener('click',()=>refresh(true));
     // list
-    if(!shown.length){ $('#vidList').innerHTML=`<p class="empty">${dirHandle||!hasFS?'No videos yet.':'Link the folder to see your videos here.'}</p>`; return; }
-    $('#vidList').innerHTML=shown.map((f,i)=>{ const x=m[f.name]||{}; const tag=f.local?(f.saved?' · <span class="hint">this session</span>':' · <b style="color:var(--accent)">not saved</b>'):''; return `<div class="vid ${x.reviewed?'reviewed':''}" data-i="${i}"><div class="vid-h"><span class="t">▶ ${esc(f.name)}</span><span class="hint">${new Date(f.modified).toLocaleDateString()} · ${(f.size/1048576).toFixed(1)} MB${x.song?' · '+esc(x.song):''}${tag}</span></div>${x.notes?`<div class="hint">${esc(x.notes)}</div>`:''}<div class="vid-body hidden"></div></div>`; }).join('');
+    if(!shown.length){ $('#vidList').innerHTML=`<p class="empty">${needsReconnect?'Reconnect the folder to see your videos.':dirHandle||!hasFS?'No videos yet.':'Link the folder to see your videos here.'}</p>`; return; }
+    $('#vidList').innerHTML=shown.map((f,i)=>{ const x=m[f.name]||{}; const tag=f.local?(f.saved?' · <span class="hint">this session</span>':' · <b style="color:var(--accent-text)">not saved</b>'):''; return `<div class="vid ${x.reviewed?'reviewed':''}" data-i="${i}"><div class="vid-h" tabindex="0" role="button" aria-expanded="false"><span class="t">▶ ${esc(f.name)}</span><span class="hint">${new Date(f.modified).toLocaleDateString()} · ${(f.size/1048576).toFixed(1)} MB${x.song?' · '+esc(x.song):''}${tag}</span></div>${x.notes?`<div class="hint">${esc(x.notes)}</div>`:''}<div class="vid-body hidden"></div></div>`; }).join('');
     $('#vidList').querySelectorAll('.vid').forEach(el=>el.querySelector('.vid-h').addEventListener('click',()=>openVideo(el)));
   }
   function suggestSong(){ const s=S.get().songs.filter(x=>['Learning','Polishing'].includes(x.status)); return s.length? `<i>${esc(s[Math.floor(Math.random()*s.length)].title)}</i>` : 'your current song'; }
   async function openVideo(el){
-    const body=el.querySelector('.vid-body'); if(!body.classList.contains('hidden')){ const v=body.querySelector('video'); if(v&&v.src) URL.revokeObjectURL(v.src); body.classList.add('hidden'); body.innerHTML=''; return; }
+    const body=el.querySelector('.vid-body'); const head=el.querySelector('.vid-h');
+    if(!body.classList.contains('hidden')){ const v=body.querySelector('video'); if(v&&v.src){ URL.revokeObjectURL(v.src); liveURLs.delete(v.src); } body.classList.add('hidden'); body.innerHTML=''; head.setAttribute('aria-expanded','false'); return; }
     const f=shown[+el.dataset.i]; if(!f) return;
-    const file=f.local? f.file : await f.handle.getFile(); const url=URL.createObjectURL(file);
-    const x=meta()[f.name]||(meta()[f.name]={song:'',notes:'',date:new Date(f.modified).toISOString().slice(0,10),reviewed:false});
+    const file=f.local? f.file : await f.handle.getFile(); const url=URL.createObjectURL(file); liveURLs.add(url); head.setAttribute('aria-expanded','true');
+    const x=meta()[f.name]||(meta()[f.name]={song:'',notes:'',date:S.localDate(f.modified),reviewed:false});
     body.classList.remove('hidden');
     const actions = f.local
       ? `<button class="btn small vDl">${S.isIOS?'Save video…':'Download again'}</button><button class="btn small ghost vLog">Log as practice session</button><button class="btn small danger vRm">Remove from list</button>`
@@ -158,11 +170,14 @@ window.VideosUI = (() => {
       <div class="form"><div class="form-row"><label>Song <input type="text" class="vSong" value="${esc(x.song||'')}"></label><label class="toggle" style="align-self:end"><input type="checkbox" class="vRev" ${x.reviewed?'checked':''}> Reviewed</label></div>
       <label>Review notes (what worked / what to fix) <textarea class="vNotes" rows="2">${esc(x.notes||'')}</textarea></label>
       <div class="btn-row"><button class="btn small vSave">Save notes</button>${actions}</div></div>`;
-    body.querySelector('.vSave').addEventListener('click',()=>{ x.song=body.querySelector('.vSong').value.trim(); x.notes=body.querySelector('.vNotes').value.trim(); x.reviewed=body.querySelector('.vRev').checked; S.save(); render(); });
+    body.querySelector('.vSave').addEventListener('click',()=>{ x.song=body.querySelector('.vSong').value.trim(); x.notes=body.querySelector('.vNotes').value.trim(); x.reviewed=body.querySelector('.vRev').checked; S.save();
+      // update in place (re-rendering would close the player)
+      el.classList.toggle('reviewed',x.reviewed); const n=el.querySelector(':scope > .hint'); if(n) n.textContent=x.notes; else if(x.notes){ const d=document.createElement('div'); d.className='hint'; d.textContent=x.notes; head.after(d); }
+      try{ window.App.toast('Notes saved'); }catch(e){} });
     body.querySelector('.vRev').addEventListener('change',(e)=>{ x.reviewed=e.target.checked; S.save(); });
-    body.querySelector('.vLog').addEventListener('click',()=>{ $('#logSong').value=x.song||''; $('#logNotes').value='Video: '+f.name+(x.notes?'\n'+x.notes:''); $('#logDate').value=new Date(f.modified).toISOString().slice(0,10); $('#logForm').scrollIntoView({behavior:'smooth'}); });
-    const dl=body.querySelector('.vDl'); if(dl) dl.addEventListener('click',async()=>{ const r=await S.saveFile(f.file,f.name); if(r!=='cancelled'){ f.saved=true; render(); } });
-    const rm=body.querySelector('.vRm'); if(rm) rm.addEventListener('click',()=>{ if(!f.saved && !confirm('This recording hasn\'t been saved. Remove it anyway?')) return; URL.revokeObjectURL(url); local=local.filter(l=>l!==f); render(); });
+    body.querySelector('.vLog').addEventListener('click',()=>{ $('#logSong').value=x.song||''; $('#logNotes').value='Video: '+f.name+(x.notes?'\n'+x.notes:''); $('#logDate').value=S.localDate(f.modified); $('#logForm').scrollIntoView({behavior:'smooth'}); });
+    const dl=body.querySelector('.vDl'); if(dl) dl.addEventListener('click',async()=>{ const r=await S.saveFile(f.file,f.name); if(r!=='cancelled'){ f.saved=true; pendingDel(f.name); render(); } });
+    const rm=body.querySelector('.vRm'); if(rm) rm.addEventListener('click',()=>{ if(!f.saved && !confirm('This recording hasn\'t been saved. Remove it anyway?')) return; URL.revokeObjectURL(url); liveURLs.delete(url); local=local.filter(l=>l!==f); pendingDel(f.name); render(); });
     const del=body.querySelector('.vDel'); if(del) del.addEventListener('click',async()=>{ if(!confirm('Delete '+f.name+' from the folder?')) return; await dirHandle.removeEntry(f.name); delete meta()[f.name]; S.save(); await refresh(); });
   }
 
@@ -174,7 +189,9 @@ window.VideosUI = (() => {
     // Warn before closing with unsaved in-memory recordings.
     window.addEventListener('beforeunload',(e)=>{ if(local.some(x=>!x.saved)){ e.preventDefault(); e.returnValue=''; } });
     if(hasFS){ try{ dirHandle=await kvGet('videoDir')||null; }catch(e){} }
-    await refresh();
+    // restore recordings that were never saved (app closed/killed before "Save video")
+    for(const [name,rec] of await pendingAll()){ if(rec && rec.blob && !local.some(l=>l.name===name)){ const b=rec.blob; local.push({name,file:b,size:b.size,modified:rec.modified||Date.now(),local:true,saved:false}); } }
+    await refresh(false); // no permission prompt without a tap — show "Reconnect folder" instead
   }
   return {init, refresh};
 })();
