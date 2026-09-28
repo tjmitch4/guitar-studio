@@ -6,13 +6,14 @@ window.TheoryUI = (() => {
   let currentKey=0;
 
   function init(){
-    ['#cagedRoot','#modesRoot'].forEach(s=>{ $(s).innerHTML=M.SHARP.map((n,i)=>`<option value="${i}">${n}</option>`).join(''); });
+    fillRootSelects();
     $('#cagedRoot').value=0; $('#modesRoot').value=0;
     ['#cagedRoot','#cagedQual'].forEach(s=>$(s).addEventListener('change',renderCaged));
     $('#modesRoot').addEventListener('change',renderModes);
-    $('#useFlats').addEventListener('change',renderAll);
+    $('#useFlats').addEventListener('change',()=>{ fillRootSelects(); renderAll(); });
     renderAll();
   }
+  function fillRootSelects(){ ['#cagedRoot','#modesRoot'].forEach(s=>{ const el=$(s), v=el.value; el.innerHTML=M.SHARP.map((n,i)=>`<option value="${i}">${M.pcToName(i,uf())}</option>`).join(''); if(v!=='') el.value=v; }); }
   function renderAll(){ renderCircle(); renderKeyDetail(); renderCaged(); renderModes(); renderRefTables(); renderCards(); }
 
   function renderCircle(){
@@ -23,7 +24,7 @@ window.TheoryUI = (() => {
       const [x0,y0]=p(rOut,a0),[x1,y1]=p(rOut,a1),[x2,y2]=p(rIn,a1),[x3,y3]=p(rIn,a0);
       const [tx,ty]=p((rOut+rIn)/2,(a0+a1)/2);
       const active=pc===currentKey;
-      return `<g class="seg" data-pc="${pc}"><path d="M${x0},${y0} A${rOut},${rOut} 0 0 1 ${x1},${y1} L${x2},${y2} A${rIn},${rIn} 0 0 0 ${x3},${y3} Z" fill="${active?'var(--accent)':minor?'var(--panel2)':'var(--panel)'}" stroke="var(--border)"/><text x="${tx}" y="${ty+5}" text-anchor="middle" font-size="${minor?13:17}" font-weight="${minor?500:700}" fill="${active?'#141414':'var(--text)'}">${label}</text></g>`;
+      return `<g class="seg" data-pc="${pc}" ${minor?'':`tabindex="0" role="button" aria-label="Key of ${label}" aria-pressed="${active}"`}><path d="M${x0},${y0} A${rOut},${rOut} 0 0 1 ${x1},${y1} L${x2},${y2} A${rIn},${rIn} 0 0 0 ${x3},${y3} Z" fill="${active?'var(--accent)':minor?'var(--panel2)':'var(--panel)'}" stroke="var(--border)"/><text x="${tx}" y="${ty+5}" text-anchor="middle" font-size="${minor?13:17}" font-weight="${minor?500:700}" fill="${active?'#141414':'var(--text)'}">${label}</text></g>`;
     };
     let s=`<svg viewBox="0 0 440 440">`;
     M.CIRCLE.forEach((pc,i)=>{
@@ -41,11 +42,14 @@ window.TheoryUI = (() => {
     $('#circleHost').querySelectorAll('.seg').forEach(g=>g.addEventListener('click',()=>{ currentKey=+g.dataset.pc; renderCircle(); renderKeyDetail(); const v=V.curated(currentKey,'',{perPosition:1})[0]; if(v) window.Tone.strum(v.frets); }));
   }
   function renderKeyDetail(){
-    const pc=currentKey, flats=M.FLAT_KEYS.has(pc); const nm=(p)=>M.pcToName(p,flats);
-    const maj=M.diatonicChords(pc,'Major (Ionian)'); const rel=M.mod(pc+9); const min=M.diatonicChords(rel,'Natural Minor (Aeolian)');
+    const pc=currentKey, flats=M.FLAT_KEYS.has(pc)||(pc===6&&uf()); const rel=M.mod(pc+9);
+    // letter-correct spelling (Cb in Gb major); pcs outside the key fall back to the key's sharp/flat side
+    const majNames=M.spellScale(pc,'Major (Ionian)',flats), spelled=new Map(M.scaleNotes(pc,'Major (Ionian)').map((p,i)=>[p,majNames[i]]));
+    const nm=(p)=>spelled.get(M.mod(p))||M.pcToName(p,flats);
+    const maj=M.diatonicChords(pc,'Major (Ionian)'); const min=M.diatonicChords(rel,'Natural Minor (Aeolian)');
     $('#keyTitle').textContent=`Key of ${nm(pc)} major / ${nm(rel)} minor`;
-    const chordPills=(dc)=>dc.map(c=>`<span class="pill" data-root="${c.root}" data-sym="${c.triad?c.triad.symbol:''}">${c.roman} <b>${nm(c.root)}${c.triad?c.triad.symbol:''}</b> <small>${c.seventh?c.seventh.symbol:''}</small></span>`).join('');
-    const notes=M.scaleNotes(pc,'Major (Ionian)').map(n=>`<span class="pill">${nm(n)}</span>`).join('');
+    const chordPills=(dc)=>dc.map(c=>`<button type="button" class="pill" data-root="${c.root}" data-sym="${c.triad?c.triad.symbol:''}">${c.roman} <b>${nm(c.root)}${c.triad?c.triad.symbol:''}</b> <small>${c.seventh?c.seventh.symbol:''}</small></button>`).join('');
+    const notes=M.scaleNotes(pc,'Major (Ionian)').map(n=>`<span class="pill static">${nm(n)}</span>`).join('');
     const neighbours=`${nm(M.mod(pc+7))} (V, one step clockwise) · ${nm(M.mod(pc+5))} (IV, one step counter-clockwise)`;
     $('#keyDetail').innerHTML=`
       <div class="row"><div class="lbl">Key signature</div>${M.KEY_SIG[pc]}</div>
@@ -55,12 +59,12 @@ window.TheoryUI = (() => {
       <div class="row"><div class="lbl">Closest keys</div>${neighbours}</div>
       <div class="row"><div class="lbl">Blues in ${nm(pc)}</div>${nm(pc)}7 – ${nm(M.mod(pc+5))}7 – ${nm(M.mod(pc+7))}7 · solo: ${nm(pc)} minor pent + ${nm(pc)} major pent (= ${nm(M.mod(pc+9))} minor pent shape)</div>
       <div class="row"><div class="lbl">Try on the fretboard</div>
-        <span class="pill" data-scale="Major (Ionian)" data-root="${pc}">${nm(pc)} major</span>
-        <span class="pill" data-scale="Major Pentatonic" data-root="${pc}">${nm(pc)} major pent</span>
-        <span class="pill" data-scale="Mixolydian" data-root="${pc}">${nm(pc)} Mixolydian</span>
-        <span class="pill" data-scale="Minor Pentatonic" data-root="${rel}">${nm(rel)} minor pent</span>
-        <span class="pill" data-scale="Dorian" data-root="${rel}">${nm(rel)} Dorian</span>
-        <span class="pill" data-scale="Blues (minor)" data-root="${rel}">${nm(rel)} blues</span>
+        <button type="button" class="pill" data-scale="Major (Ionian)" data-root="${pc}">${nm(pc)} major</button>
+        <button type="button" class="pill" data-scale="Major Pentatonic" data-root="${pc}">${nm(pc)} major pent</button>
+        <button type="button" class="pill" data-scale="Mixolydian" data-root="${pc}">${nm(pc)} Mixolydian</button>
+        <button type="button" class="pill" data-scale="Minor Pentatonic" data-root="${rel}">${nm(rel)} minor pent</button>
+        <button type="button" class="pill" data-scale="Dorian" data-root="${rel}">${nm(rel)} Dorian</button>
+        <button type="button" class="pill" data-scale="Blues (minor)" data-root="${rel}">${nm(rel)} blues</button>
       </div>`;
     $('#keyDetail').querySelectorAll('[data-sym]').forEach(p=>p.addEventListener('click',()=>{ const v=V.curated(+p.dataset.root,p.dataset.sym,{perPosition:1})[0]; if(v) window.Tone.strum(v.frets); window.FretboardUI.showChord(+p.dataset.root,p.dataset.sym); }));
     $('#keyDetail').querySelectorAll('[data-scale]').forEach(p=>p.addEventListener('click',()=>window.FretboardUI.showScale(+p.dataset.root,p.dataset.scale)));
@@ -79,23 +83,25 @@ window.TheoryUI = (() => {
   }
 
   function renderModes(){
-    const root=+$('#modesRoot').value; const flats=M.FLAT_KEYS.has(root); const nm=(p)=>M.pcToName(p,flats);
+    const root=+$('#modesRoot').value; const flats=M.FLAT_KEYS.has(root)||(root===6&&uf());
+    const parentNames=M.spellScale(root,'Major (Ionian)',flats), spelled=new Map(M.scaleNotes(root,'Major (Ionian)').map((p,i)=>[p,parentNames[i]]));
+    const nm=(p)=>spelled.get(M.mod(p))||M.pcToName(p,flats);
     const majorIv=M.SCALES['Major (Ionian)'].iv;
     const scaleNames=['Major (Ionian)','Dorian','Phrygian','Lydian','Mixolydian','Natural Minor (Aeolian)','Locrian'];
     const CHAR=['—','natural 6 in a minor scale','b2','#4','b7 in a major scale','b6, b7','b2, b5'];
     const CHORD=['maj7','m7','m7','maj7','7','m7','m7b5'];
     const rows=scaleNames.map((sn,i)=>{
       const r=M.mod(root+majorIv[i]); const iv=M.SCALES[sn].iv;
-      return `<tr class="clickable" data-root="${r}" data-scale="${sn}"><td><b>${nm(r)} ${M.MODE_NAMES[i]}</b></td><td>${iv.map(x=>M.INTERVAL_NAMES[x]).join(' ')}</td><td>${M.scaleNotes(r,sn).map(nm).join(' ')}</td><td>${nm(r)}${CHORD[i]}</td><td>${CHAR[i]}</td><td class="hint">${M.SCALES[sn].desc}</td></tr>`;
+      return `<tr class="clickable" data-root="${r}" data-scale="${sn}" tabindex="0" role="button" aria-label="Show ${nm(r)} ${M.MODE_NAMES[i]} on the fretboard"><td><b>${nm(r)} ${M.MODE_NAMES[i]}</b></td><td>${iv.map(x=>M.INTERVAL_NAMES[x]).join(' ')}</td><td>${M.scaleNotes(r,sn).map(nm).join(' ')}</td><td>${nm(r)}${CHORD[i]}</td><td>${CHAR[i]}</td><td class="hint">${M.SCALES[sn].desc}</td></tr>`;
     }).join('');
-    $('#modesTable').innerHTML=`<table class="ref-table"><thead><tr><th>Mode</th><th>Formula</th><th>Notes</th><th>Home chord</th><th>Signature note</th><th>Sound</th></tr></thead><tbody>${rows}</tbody></table>`;
+    $('#modesTable').innerHTML=`<div class="table-scroll"><table class="ref-table"><thead><tr><th>Mode</th><th>Formula</th><th>Notes</th><th>Home chord</th><th>Signature note</th><th>Sound</th></tr></thead><tbody>${rows}</tbody></table></div>`;
     $('#modesTable').querySelectorAll('tr.clickable').forEach(tr=>tr.addEventListener('click',()=>window.FretboardUI.showScale(+tr.dataset.root,tr.dataset.scale)));
   }
 
   function renderRefTables(){
     const EX=['Unison','Jaws / "White Christmas" opening','"Happy Birthday" (first two notes)','"Smoke on the Water" (riff), "Greensleeves"','"Oh, When the Saints"','"Here Comes the Bride", "Amazing Grace"','"The Simpsons", "Maria"','"Star Wars" theme, "Twinkle Twinkle"','"The Entertainer" (opening leap)','"My Way", NBC chime','"Star Trek" (original)','"Take On Me" (chorus leap)'];
     $('#intervalsTable').innerHTML=`<tr><th>Semitones</th><th>Name</th><th>Symbol</th><th>Ear anchor</th></tr>`+M.INTERVAL_LONG.map((n,i)=>`<tr><td>${i}</td><td>${n}</td><td>${M.INTERVAL_NAMES[i]}</td><td class="hint">${EX[i]}</td></tr>`).join('');
-    $('#chordFormulaTable').innerHTML=`<tr><th>Symbol</th><th>Name</th><th>Formula</th><th>Ex. in C</th></tr>`+M.CHORDS.map(([sym,iv,name])=>`<tr class="clickable" data-sym="${sym}"><td><b>C${sym}</b></td><td>${name}</td><td>${iv.map(x=>M.INTERVAL_NAMES[x]).join(' ')}</td><td>${iv.map(x=>M.pcToName(x)).join(' ')}</td></tr>`).join('');
+    $('#chordFormulaTable').innerHTML=`<tr><th>Symbol</th><th>Name</th><th>Formula</th><th>Ex. in C</th></tr>`+M.CHORDS.map(([sym,iv,name])=>`<tr class="clickable" data-sym="${sym}" tabindex="0" role="button" aria-label="Show C${sym} voicings"><td><b>C${sym}</b></td><td>${name}</td><td>${iv.map(x=>M.INTERVAL_NAMES[x]).join(' ')}</td><td>${iv.map(x=>M.pcToName(x)).join(' ')}</td></tr>`).join('');
     $('#chordFormulaTable').querySelectorAll('tr.clickable').forEach(tr=>tr.addEventListener('click',()=>window.FretboardUI.showChord(0,tr.dataset.sym)));
   }
 

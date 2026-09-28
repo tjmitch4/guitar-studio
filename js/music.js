@@ -131,6 +131,26 @@ window.Music = (() => {
     return SCALES[scaleName].iv.map(i=>mod(rootPc+i));
   }
 
+  // Spell a scale with one letter per degree (7-note scales), so Gb major gives Cb and F major gives Bb.
+  // Tries the sharp and flat name of the root and keeps the one with fewer accidentals (no doubles);
+  // ties go to preferFlats. Other scales fall back to plain sharp/flat names.
+  const LETTERS='CDEFGAB', LETTER_PC=[0,2,4,5,7,9,11];
+  function spellScale(rootPc, scaleName, preferFlats=false){
+    const iv=SCALES[scaleName].iv; rootPc=mod(rootPc);
+    if(iv.length!==7) return iv.map(i=>pcToName(rootPc+i,preferFlats));
+    const tryRoot=(rootName)=>{
+      const L0=LETTERS.indexOf(rootName[0]); let cost=0;
+      const names=iv.map((i,d)=>{ const li=(L0+d)%7, target=mod(rootPc+i); const diff=mod(target-LETTER_PC[li]+6)-6;
+        if(Math.abs(diff)>2){ cost+=100; return pcToName(target,preferFlats); }
+        if(Math.abs(diff)===2) cost+=10; cost+=Math.abs(diff);
+        return LETTERS[li]+(diff>0?'#'.repeat(diff):'b'.repeat(-diff)); });
+      return {names,cost};
+    };
+    const a=tryRoot(SHARP[rootPc]), b=tryRoot(FLAT[rootPc]);
+    if(a.cost===b.cost) return (preferFlats?b:a).names;
+    return (a.cost<b.cost?a:b).names;
+  }
+
   // Diatonic chords for a 7-note scale: stack thirds (triads & sevenths)
   function diatonicChords(rootPc, scaleName){
     const iv = SCALES[scaleName].iv;
@@ -141,14 +161,25 @@ window.Music = (() => {
       const tri=[notes[d],notes[(d+2)%7],notes[(d+4)%7]];
       const sev=[...tri,notes[(d+6)%7]];
       const t=identifyChord(tri,n)[0]; const s=identifyChord(sev,n)[0];
+      // minor-quality chords get a lowercase numeral ('maj7' is NOT minor)
+      const isMinorSym = (sym)=> /^m(?!aj)/.test(sym) || sym.startsWith('dim');
       const rn = (sym)=>{
         let r=ROMAN[d];
-        if(sym && (sym.startsWith('m')||sym.startsWith('dim'))) r=r.toLowerCase();
-        if(sym==='dim'||sym==='m7b5'||sym==='dim7') r+='°';
+        if(sym && isMinorSym(sym)) r=r.toLowerCase();
+        if(sym==='dim') r+='°';
         if(sym==='aug') r+='+';
         return r;
       };
-      return {degree:d+1, root:n, triad:t, seventh:s, roman:rn(t?t.symbol:''), roman7:rn(s?s.symbol:'')+(s?(s.symbol.replace(/^m(?!aj)/,'').replace('dim','')||''):'')};
+      const rn7 = (sym)=>{
+        if(!sym) return ROMAN[d];
+        const up=ROMAN[d], lo=up.toLowerCase();
+        if(sym==='m7b5') return lo+'ø7';
+        if(sym==='dim7') return lo+'°7';
+        if(sym==='maj7#5') return up+'+maj7';
+        if(sym==='7#5') return up+'+7';
+        return (isMinorSym(sym)?lo:up)+sym.replace(/^m(?!aj)/,'');
+      };
+      return {degree:d+1, root:n, triad:t, seventh:s, roman:rn(t?t.symbol:''), roman7:rn7(s?s.symbol:'')};
     });
   }
 
@@ -161,5 +192,5 @@ window.Music = (() => {
   const STRING_NAMES = ['E','A','D','G','B','e'];
 
   return {SHARP,FLAT,FLAT_KEYS,noteToPc,pcToName,mod,INTERVAL_NAMES,INTERVAL_LONG,SCALES,MODE_NAMES,CHORDS,CHORD_BY_SYMBOL,
-          chordTones,identifyChord,chordLabel,scaleNotes,diatonicChords,CIRCLE,KEY_SIG,TUNING,STRING_NAMES};
+          chordTones,identifyChord,chordLabel,scaleNotes,spellScale,diatonicChords,CIRCLE,KEY_SIG,TUNING,STRING_NAMES};
 })();
