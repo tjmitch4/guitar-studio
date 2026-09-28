@@ -1,7 +1,8 @@
 // Guitar Studio service worker: offline support.
 // Strategy: NETWORK-FIRST for same-origin GETs (so a new push shows up on the next load when online),
 // falling back to the cache when offline. Bump VERSION to force old caches to be dropped.
-const VERSION = 'gs-v1';
+// Bump on every release (date + letter) so phones drop the old cache.
+const VERSION = 'gs-2026-09-28a';
 const CORE = [
   './',
   'index.html',
@@ -10,7 +11,7 @@ const CORE = [
   'js/fretboard-ui.js', 'js/theory-ui.js', 'js/practice-ui.js', 'js/songs-ui.js',
   'js/trainer-ui.js', 'js/videos-ui.js', 'js/tuner-ui.js', 'js/app.js',
   'manifest.webmanifest',
-  'icons/icon-192.png', 'icons/icon-512.png', 'icons/apple-touch-icon.png',
+  'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-512.png', 'icons/apple-touch-icon.png',
 ];
 const NET_TIMEOUT_MS = 5000; // on a very slow connection, fall back to cache after this long
 

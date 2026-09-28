@@ -62,7 +62,8 @@ localStorage under the key `guitarStudio.v1`. That means:
 ## Updating the app
 Push to the `main` branch and GitHub Pages redeploys it. The service worker fetches from the network first, so
 an open device gets the new version on its next load when it's online. When offline, it falls back to the
-cached copy. If you change the list of files, update the `CORE` list and bump `VERSION` in `sw.js`.
+cached copy. Bump `VERSION` in `sw.js` on every release (use the date, e.g. `gs-2026-09-28a`) so phones drop the old
+cache in one go, and update the `CORE` list if you add or rename files. Open copies show an "updated — Reload" toast.
 
 ## Files
 - `index.html`, `css/style.css`
