@@ -83,9 +83,10 @@ window.VideosUI = (() => {
     const d=new Date(); const stamp=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}_${String(d.getHours()).padStart(2,'0')}${String(d.getMinutes()).padStart(2,'0')}`;
     const name=`${stamp}${song?'_'+song.replace(/ /g,'-'):''}.${ext}`;
     meta()[name]={song:$('#vidSong').value.trim(), notes:$('#vidNotes').value.trim(), date:stamp.slice(0,10), reviewed:false}; S.save();
-    try{ window.App.toast('Recording saved'+(dirHandle&&!needsReconnect?' to folder':'')); }catch(e){}
     $('#vidNotes').value='';
-    await store(name,blob,{fresh:true});
+    const where=await store(name,blob,{fresh:true});
+    const kept=local.find(l=>l.name===name);
+    try{ window.App.toast(where==='folder'?'Recording saved to folder':(kept&&!kept.saved?'Recording ready — open it and tap Save video':'Recording saved')); }catch(e){}
     await refresh();
   }
   // Put a recorded/imported video somewhere: the linked folder if we have one, otherwise the session list.

@@ -11,7 +11,7 @@ window.PracticeUI = (() => {
   function fmt(sec){ sec=Math.floor(sec); return String(Math.floor(sec/60)).padStart(2,'0')+':'+String(sec%60).padStart(2,'0'); }
   function tick(){ const e=tElapsed+(tStart?(Date.now()-tStart)/1000:0); $('#timerDisplay').textContent=fmt(e); }
   function timerToggle(){
-    if(tStart){ tElapsed+=(Date.now()-tStart)/1000; tStart=null; clearInterval(tInt); $('#timerStart').textContent='Resume'; $('#logMinutes').value=Math.max(1,Math.round(tElapsed/60)); }
+    if(tStart){ tElapsed+=(Date.now()-tStart)/1000; tStart=null; clearInterval(tInt); $('#timerStart').textContent='Resume'; if(!editingId) $('#logMinutes').value=Math.max(1,Math.round(tElapsed/60)); }
     else { tStart=Date.now(); tInt=setInterval(tick,500); $('#timerStart').textContent='Pause'; }
     tick();
   }
@@ -64,7 +64,7 @@ window.PracticeUI = (() => {
     if(song && fields.tempo){ song.curTempo=fields.tempo; song.updated=Date.now(); }
     const ok=S.save();
     const wasEdit=!!existing;
-    cancelEdit();
+    resetForm({resetTimer:!wasEdit});
     renderProgress(); renderHistory(); window.SongsUI && window.SongsUI.render();
     if(ok!==false){ const st=streakDays(); toast(wasEdit?'Session updated':`Logged ${fields.minutes} min${st>1?` · streak ${st} days`:''}`); }
   }
@@ -76,10 +76,13 @@ window.PracticeUI = (() => {
     $('#logSubmit').textContent='Update session'; $('#logCancelEdit').classList.remove('hidden');
     $('#logForm').scrollIntoView({behavior:'smooth',block:'start'}); $('#logMinutes').focus({preventScroll:true});
   }
-  function cancelEdit(){
-    editingId=null; $('#logForm').reset(); $('#logDate').value=today(); selectedCats.clear(); renderCats(); timerReset();
+  // After saving a NEW session the timer starts over; after editing/cancelling an old one, a running practice timer is kept.
+  function resetForm({resetTimer=false}={}){
+    editingId=null; $('#logForm').reset(); $('#logDate').value=today(); selectedCats.clear(); renderCats();
+    if(resetTimer) timerReset(); else if(tStart||tElapsed){ const e=tElapsed+(tStart?(Date.now()-tStart)/1000:0); $('#logMinutes').value=Math.max(1,Math.round(e/60)); }
     $('#logSubmit').textContent='Save session'; $('#logCancelEdit').classList.add('hidden');
   }
+  const cancelEdit=()=>resetForm({resetTimer:false});
   function renderSongList(){ $('#songList').innerHTML=S.get().songs.map(s=>`<option value="${esc(s.title)}">`).join(''); }
 
   // ---------- Plan generator ----------
@@ -144,14 +147,14 @@ window.PracticeUI = (() => {
     $('#metroSlider').addEventListener('input',()=>$('#metroBpm').value=$('#metroSlider').value);
     $('#metroSig').addEventListener('change',()=>{ renderBeats(); beat=0; });
     $('#logForm').addEventListener('submit',saveSession);
-    $('#logCancelEdit').addEventListener('click',cancelEdit);
+    $('#logCancelEdit').addEventListener('click',()=>cancelEdit());
     $('#planRegen').addEventListener('click',generatePlan);
     $('#exportBtn').addEventListener('click',async()=>{ const r=await S.exportJSON(); if(r!=='cancelled') toast('Backup exported'); });
     $('#importFile').addEventListener('change',(e)=>{ const f=e.target.files[0]; if(!f) return; S.importJSON(f,(err,c)=>{
       e.target.value='';
       if(err){ alert('Import failed: '+err.message); return; }
       document.getElementById('dataBanner').classList.add('hidden');
-      renderProgress(); renderHistory(); renderSongList(); window.SongsUI.render(); try{ window.TrainerUI.render(); }catch(x){} try{ window.VideosUI.refresh(); }catch(x){}
+      renderProgress(); renderHistory(); renderSongList(); window.SongsUI.render(); try{ window.TrainerUI.render(); }catch(x){} try{ window.VideosUI.refresh(false); }catch(x){}
       const parts=[]; if(c.sessions) parts.push(`${c.sessions} session${c.sessions>1?'s':''}`); if(c.songsAdded) parts.push(`${c.songsAdded} song${c.songsAdded>1?'s':''}`); if(c.attempts) parts.push(`${c.attempts} trainer answers`); if(c.videos) parts.push(`${c.videos} video note${c.videos>1?'s':''}`);
       const msg=(parts.length?'Imported '+parts.join(', '):'Nothing new to import')+(c.songsUpdated?` · updated ${c.songsUpdated} song${c.songsUpdated>1?'s':''}`:'');
       window.App.toast(msg,{ms:4000});
