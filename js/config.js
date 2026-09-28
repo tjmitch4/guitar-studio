@@ -1,19 +1,19 @@
-// App configuration. The Dropbox app key is public (it's a PKCE app with no secret), so it's safe to commit.
-// Leave DROPBOX_APP_KEY empty and the app works exactly as before, fully local ("Sync not configured yet").
+// App configuration. No secrets live here: the GitHub token is pasted by the user and kept only in this
+// browser's localStorage (key TOKEN_KEY). With no token the app works exactly as before, fully local.
 window.GS_CONFIG = Object.assign({
-  // Paste the "App key" from https://www.dropbox.com/developers/apps here to turn on sync.
-  DROPBOX_APP_KEY: '',
-
-  // Where the data file lives in TJ's Dropbox (his member folder = the default "home" namespace).
-  DATA_DIR: '/TJ/Guitar',
-  DATA_PATH: '/TJ/Guitar/guitar-studio-data.json',
-  // Recordings and imports upload here when signed in.
-  VIDEO_DIR: '/TJ/Guitar/Guitar Studio/Practice Videos',
-  // Fallback for Dropbox Business: if DATA_DIR isn't found in the home namespace, retry from the team
-  // root namespace with this prefix (the account's home_path from users/get_current_account is tried first).
-  TEAM_HOME_PREFIX: '/TJ Mitchell',
+  // The private data repo shared with Lift Studio (Lift uses lift/, Guitar Studio uses guitar/).
+  GH_API: 'https://api.github.com',
+  GH_OWNER: 'tjmitch4',
+  GH_REPO: 'studio-data',
+  GH_BRANCH: 'main',
+  GH_PREFIX: 'guitar/',
 
   // localStorage keys
   STORE_KEY: 'guitarStudio.v1',
-  DROPBOX_KEY: 'guitarStudio.dropbox',
+  // Shared with Lift Studio (same origin, tjmitch4.github.io): paste the token once per browser.
+  TOKEN_KEY: 'studioData.githubToken',
+  // This app's sync bookkeeping: last-synced path -> blob sha map, last sync time, device id.
+  SYNC_KEY: 'guitarStudio.githubSync',
+  // A short random id for this browser, used in commit messages ("from iPhone 7k2f").
+  DEVICE_KEY: 'guitarStudio.deviceId',
 }, window.GS_CONFIG_OVERRIDE || {}); // test pages set GS_CONFIG_OVERRIDE before this file loads

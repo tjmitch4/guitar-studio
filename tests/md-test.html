@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Guitar Studio — Markdown file tests</title>
+<style>
+  body{font:14px/1.45 system-ui,sans-serif;margin:1rem;background:#fff;color:#111}
+  h1{font-size:1.2rem} .sum{font-weight:700;font-size:1.1rem;margin:.5rem 0 1rem}
+  table{border-collapse:collapse;width:100%} td,th{border-bottom:1px solid #ddd;padding:.3rem .5rem;text-align:left;vertical-align:top}
+  .pass{color:#1a7f37;font-weight:700} .fail{color:#c62828;font-weight:700} pre{margin:0;white-space:pre-wrap;font-size:12px}
+</style>
+</head>
+<body>
+<h1>Markdown serializer + sync plan tests (<code>js/md-format.js</code>, <code>js/sync-plan.js</code>)</h1>
+<div class="sum" id="sum">Running…</div>
+<table><thead><tr><th>#</th><th>Case</th><th>Result</th><th>Detail</th></tr></thead><tbody id="rows"></tbody></table>
+<script src="../js/sync-merge.js"></script>
+<script src="../js/md-format.js"></script>
+<script src="../js/sync-plan.js"></script>
+<script>
+(async function(){
+  const SM=SyncMerge, MD=MdFormat, P=SyncPlan;
+  const results=[];
+  async function test(name, fn){ try{ const r=await fn(); results.push({name, ok:true, detail:typeof r==='string'?r:''}); }catch(e){ results.push({name, ok:false, detail:(e&&e.stack)||String(e)}); } }
+  const eq=(a,b,msg)=>{ const sa=JSON.stringify(a), sb=JSON.stringify(b); if(sa!==sb) throw new Error((msg||'not equal')+'\n  got:      '+sa+'\n  expected: '+sb); };
+  const ok=(c,msg)=>{ if(!c) throw new Error(msg||'assertion failed'); };
+  const same=(a,b,msg)=>{ if(SM.stable(a)!==SM.stable(b)) throw new Error((msg||'records differ')+'\n  got:      '+SM.stable(a)+'\n  expected: '+SM.stable(b)); };
+  const nasty='Quotes " and \' and `backticks` ```json\n## Data\n```\n\\ backslash, tab\tend, CRLF\r\nline, emoji 🎸🔥, accents Café Añoranza, CJK 日本語, RTL שלום, zero-width​, U+2028 x, <b>html</b> | pipe';
+  const sess=(o)=>Object.assign({id:'k3j2h1xmfz8a1b', date:'2026-09-27', minutes:25, cats:['Technique','Song'], song:'Slow Dancing in a Burning Room', tempo:62, rating:'🙂 good', notes:'Bends in tune.\nNext: verse comping.', created:'2026-09-27T14:00:00.000Z', updatedAt:1790000000123}, o||{});
+  const song=(o)=>Object.assign({id:'s1', title:'Slow Dancing in a Burning Room', artist:'John Mayer', status:'Learning', key:'C#m', tuning:'Standard', tempo:70, curTempo:64, sections:'Intro riff\nVerse comping', notes:'Keep thumb steady.', links:'https://youtu.be/x', added:'2026-08-16', updatedAt:1790000000000}, o||{});
+  const sha=P.gitBlobSha;
+
+  await test('Session → Markdown → record is lossless (unicode, quotes, newlines, backticks, a fake "## Data" in the notes)', ()=>{
+    const r=sess({notes:nasty, song:nasty, cats:['Song',nasty], rating:''}); const md=MD.sessionMd(r); const back=MD.parseFile('guitar/sessions/x.md', md).record;
+    same(back, r); eq(back.notes, nasty);
+  });
+  await test('Song → Markdown → record is lossless, incl. empty strings, null, 0 and nested values', ()=>{
+    const r=song({title:nasty, artist:'', curTempo:'', tempo:0, notes:null, extra:{a:[1,'two',{b:null}]}, links:nasty}); const back=MD.parseFile('guitar/songs/x.md', MD.songMd(r)).record; same(back, r);
+  });
+  await test('Old-format records (no updatedAt, odd fields) round-trip too', ()=>{
+    const r={id:'hq1w2e3r4', date:'2026-08-30', minutes:20, cats:[], song:'', notes:'B old, no id', created:'2026-08-30T08:00:00.000Z', updatedAt:0};
+    same(MD.parseFile('guitar/sessions/x.md', MD.sessionMd(r)).record, r);
+  });
+  await test('Serialization is deterministic: key order and object identity don\'t change the bytes', async()=>{
+    const a=sess(); const b={}; Object.keys(a).reverse().forEach(k=>b[k]=a[k]);
+    eq(MD.sessionMd(a), MD.sessionMd(b)); eq(await sha(MD.sessionMd(a)), await sha(MD.sessionMd(JSON.parse(JSON.stringify(b)))));
+  });
+  await test('File layout: frontmatter of flat scalars, readable body, final ## Data json block', ()=>{
+    const md=MD.sessionMd(sess());
+    ok(md.startsWith('---\nid: k3j2h1xmfz8a1b\ntype: session\ndate: 2026-09-27\n'), md.slice(0,80));
+    const fm=md.split('---\n')[1]; fm.trim().split('\n').forEach(l=>ok(/^[A-Za-z]+: [^\n]+$/.test(l) && !/: [\[{]/.test(l), 'flat scalar line: '+l));
+    ok(/\n# Practice session · Sunday 27 September 2026\n/.test(md)); ok(md.includes('- **Minutes:** 25')); ok(md.includes('> Bends in tune.'));
+    ok(/\n## Data\n\n```json\n\{\n[\s\S]*\n\}\n```\n$/.test(md), 'ends with the data block');
+    return md;
+  });
+  await test('Frontmatter strings with YAML-special characters are double-quoted', ()=>{
+    const md=MD.songMd(song({title:'Yes: No # maybe', artist:'true', key:'C#m'}));
+    ok(md.includes('title: "Yes: No # maybe"')); ok(md.includes('artist: "true"')); ok(md.includes('key: C#m'));
+  });
+  await test('Parser only reads the LAST ## Data block, tolerates CRLF line endings', ()=>{
+    const md=MD.sessionMd(sess({notes:'## Data\n```json\n{"id":"evil"}\n```'}));
+    eq(MD.parseFile('guitar/sessions/a.md', md).record.id, 'k3j2h1xmfz8a1b');
+    eq(MD.parseFile('guitar/sessions/a.md', md.replace(/\n/g,'\r\n')).record.id, 'k3j2h1xmfz8a1b');
+  });
+  await test('Corrupt files throw (the sync skips them): no data section, bad JSON, no id, wrong shapes', ()=>{
+    const bad=[['guitar/sessions/a.md','# just text'],['guitar/sessions/a.md','## Data\n\n```json\n{nope\n```\n'],['guitar/sessions/a.md','## Data\n```json\n{"minutes":3}\n```'],
+      ['guitar/trainer/2026-09.md','## Data\n```json\n{"attempts":5}\n```'],['guitar/settings.md','## Data\n```json\n[1,2]\n```'],['guitar/songs/a.md','## Data\n```json\n{"id":"x","updatedAt":"soon"}\n```']];
+    bad.forEach(([p,t])=>{ let threw=false; try{ MD.parseFile(p,t); }catch(e){ threw=true; } ok(threw, 'should throw: '+p+' '+t); });
+    eq(MD.parseFile('guitar/PROGRESS.md','anything'), null, 'PROGRESS.md is never parsed'); eq(MD.parseFile('guitar/.gitkeep',''), null);
+  });
+  await test('File names: lowercase YYYY-MM-DD-<focus>-<shortid>.md and <title-slug>-<shortid>.md', ()=>{
+    eq(MD.recordPath('sessions', sess()), 'guitar/sessions/2026-09-27-technique-k3j2h1.md');
+    eq(MD.recordPath('sessions', sess({cats:[], song:'Café — Añoranza!'})), 'guitar/sessions/2026-09-27-cafe-anoranza-k3j2h1.md');
+    eq(MD.recordPath('sessions', sess({cats:[], song:''})), 'guitar/sessions/2026-09-27-practice-k3j2h1.md');
+    eq(MD.recordPath('songs', song()), 'guitar/songs/slow-dancing-in-a-burning-room-s1.md');
+    eq(MD.recordPath('songs', song({title:'日本'})), 'guitar/songs/untitled-s1.md');
+    const taken=new Set(['guitar/songs/slow-dancing-in-a-burning-room-s1.md']); ok(MD.recordPath('songs', song(), p=>taken.has(p))!==[...taken][0], 'clash avoided');
+    const p=MD.recordPath('sessions', sess({id:'ABC_def-99X'})); ok(/^guitar\/sessions\/[a-z0-9-]+\.md$/.test(p), p);
+  });
+  await test('Trainer answers bucket by UTC month and round-trip; body has the month summary', ()=>{
+    const a=(ts,ok,s,pc)=>{ const x={s,f:3,pc,ok,ms:1500,mode:'find',lvl:1,ts}; x.id=SM.attemptId(x); return x; };
+    const q={attempts:[a(Date.UTC(2026,7,31,23,59),true,0,5), a(Date.UTC(2026,8,1,0,1),false,1,7), a(Date.UTC(2026,8,2),true,1,7)]};
+    const f=MD.trainerFiles(q); eq(Object.keys(f).sort(), ['guitar/trainer/2026-08.md','guitar/trainer/2026-09.md']);
+    const back=MD.parseFile('guitar/trainer/2026-09.md', f['guitar/trainer/2026-09.md'].content).attempts; same(back, q.attempts.slice(1));
+    ok(f['guitar/trainer/2026-09.md'].content.includes('- **Answers:** 2 · **Correct:** 1 (50%)'));
+  });
+  await test('Video notes and settings round-trip', ()=>{
+    const v={'2026-09-01_1900_Lenny.mp4':{song:'Lenny', notes:nasty, date:'2026-09-01', reviewed:false, updatedAt:5}};
+    const pv=MD.parseFile('guitar/video-notes.md', MD.videosMd(v,[{id:'old.mp4',deleted:true,updatedAt:3}])); same(pv.videos, v); eq(pv.deleted[0].id,'old.mp4');
+    const s={prefs:{useFlats:true, tone:'electric'}, prefsMeta:{useFlats:10}, quizResetAt:99, tombstones:{songs:[{id:'s1',deleted:true,updatedAt:7}]}};
+    const ps=MD.parseFile('guitar/settings.md', MD.settingsMd(s)); same(ps.prefs, s.prefs); same(ps.prefsMeta, s.prefsMeta); eq(ps.quizResetAt,99); eq(ps.tombstones.songs[0].id,'s1');
+  });
+  await test('PROGRESS.md: streak, weekly minutes, recent sessions, song board with tempo progress, trainer level + weak spots', ()=>{
+    const d={sessions:[sess({date:'2026-09-27'}), sess({id:'b2', date:'2026-09-26', tempo:60}), sess({id:'b3', date:'2026-09-25', cats:['Theory'], song:'', tempo:null})],
+      songs:[song(), song({id:'x', title:'Little Wing', status:'Want', curTempo:'', tempo:''})],
+      quiz:{attempts:Array.from({length:30},(_,i)=>({s:i%2,f:1,pc:i%2?5:7,ok:i%3>0,ms:2000,mode:'find',lvl:1,ts:1790000000000+i}))},
+      videos:{'v.mp4':{song:'Lenny',notes:'check bends',date:'2026-09-20',reviewed:false,updatedAt:1}}, prefs:{}};
+    const md=MD.progressMd(d,{today:'2026-09-27', device:'Windows ab12'});
+    ['## Snapshot','**Practice streak:** 3 days','## Weekly minutes (last 12 weeks)','2026-09-21 (this week) | 75 | 3 | 3','## Recent sessions','## Song board','### Learning (1)','64 / 70 bpm (91% of target)','Tempo trend: 09-26: 60 → 09-27: 62 bpm','## Note trainer','**Current level:** L1','Weak spots','## Practice videos']
+      .forEach(s=>ok(md.includes(s),'missing: '+s));
+    eq(md, MD.progressMd(JSON.parse(JSON.stringify(d)),{today:'2026-09-27', device:'Windows ab12'}), 'deterministic');
+    return md.slice(0,600)+'…';
+  });
+  await test('git blob sha matches git (empty file, "hello\\n", unicode)', async()=>{
+    eq(await sha(''), 'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391'); eq(await sha('hello\n'), 'ce013625030ba8dba906f756967f9e9ca394464a');
+    eq((await sha('é')).length, 40);
+  });
+
+  // ---- plan (pure) ----
+  const tree=(obj)=>new Map(Object.entries(obj));
+  const plan=async(data, meta, t, fetched)=>{ const r=P.mergeRemote(data, meta, t, fetched||{}); const w=await P.planWrites(JSON.parse(JSON.stringify(r.merged)), meta, t, r.keyPaths, r.bad, {sha, today:'2026-09-27', device:'Test'}); return Object.assign(r, w); };
+  await test('Plan: first sync writes one file per record + trainer/settings/PROGRESS; a second plan against the result writes nothing', async()=>{
+    const d=SM.normalize({sessions:[sess()], songs:[song()], prefs:{useFlats:true}, prefsMeta:{useFlats:5}, quiz:{attempts:[{s:0,f:1,pc:5,ok:true,ms:1,ts:1790000000000}]}});
+    const p1=await plan(d,{files:{}},tree({'guitar/.gitkeep':'e69de29bb2d1d6434b8b29ae775ad8c2e48c5391'}));
+    eq(p1.writes.map(w=>w.path).sort(), ['guitar/PROGRESS.md','guitar/sessions/2026-09-27-technique-k3j2h1.md','guitar/settings.md','guitar/songs/slow-dancing-in-a-burning-room-s1.md','guitar/trainer/2026-09.md']);
+    const t2=new Map(Object.entries(p1.files).map(([p,f])=>[p,f.sha]));
+    const p2=await plan(d,{files:p1.files},t2); eq(p2.writes.length,0,'idle: nothing to write'); eq(P.needFetch(t2,{files:p1.files},d).length,0,'idle: nothing to download');
+  });
+  await test('Plan: editing a record keeps its file name (no renames), even when the date/title changes', async()=>{
+    const d=SM.normalize({sessions:[sess()], songs:[song()]});
+    const p1=await plan(d,{files:{}},tree({})); const t2=new Map(Object.entries(p1.files).map(([p,f])=>[p,f.sha]));
+    d.sessions[0].date='2026-09-20'; d.sessions[0].cats=['Theory']; d.sessions[0].updatedAt++; d.songs[0].title='Renamed'; d.songs[0].updatedAt++;
+    const p2=await plan(d,{files:p1.files},t2); eq(p2.writes.map(w=>w.path).filter(p=>!/PROGRESS/.test(p)).sort(), ['guitar/sessions/2026-09-27-technique-k3j2h1.md','guitar/songs/slow-dancing-in-a-burning-room-s1.md']);
+  });
+  await test('Plan: the same record found in two files (e.g. two devices named it differently) is merged and one file removed', async()=>{
+    const a=sess({updatedAt:10, notes:'A'}), b=sess({updatedAt:20, notes:'B'});
+    const t=tree({'guitar/sessions/one.md':await sha(MD.sessionMd(a)), 'guitar/sessions/two.md':await sha(MD.sessionMd(b))});
+    const p=await plan(SM.normalize({}),{files:{}},t,{'guitar/sessions/one.md':MD.sessionMd(a),'guitar/sessions/two.md':MD.sessionMd(b)});
+    eq(p.merged.sessions.length,1); eq(p.merged.sessions[0].notes,'B'); ok(p.writes.some(w=>w.path==='guitar/sessions/two.md' && w.content===null)); ok(p.writes.some(w=>w.path==='guitar/sessions/one.md' && w.content));
+  });
+
+  const rows=document.getElementById('rows'); let pass=0;
+  results.forEach((r,i)=>{ if(r.ok) pass++; const tr=document.createElement('tr'); tr.innerHTML=`<td>${i+1}</td><td></td><td class="${r.ok?'pass':'fail'}">${r.ok?'PASS':'FAIL'}</td><td><pre></pre></td>`; tr.children[1].textContent=r.name; tr.querySelector('pre').textContent=r.detail; rows.append(tr); });
+  const sum=document.getElementById('sum'); sum.textContent=`${pass}/${results.length} passed`+(pass===results.length?' — all green':''); sum.className='sum '+(pass===results.length?'pass':'fail');
+  window.__mdResults={pass,total:results.length,failed:results.filter(r=>!r.ok).map(r=>r.name+': '+r.detail)};
+})();
+</script>
+</body>
+</html>

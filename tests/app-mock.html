@@ -1,16 +1,22 @@
 <!doctype html>
 <meta charset="utf-8">
-<title>Guitar Studio (mock Dropbox)</title>
-<!-- The real app (index.html) with a fake Dropbox and a fake app key, for manual/automated testing.
-     Uses its own storage keys (gsMock.*) so it never touches real data. DropboxMock state persists across reloads.
-     Controls from the console: DropboxMock.set({offline:true}), DropboxMock.put(path, text), DropboxMock.reset(). -->
-<script src="dropbox-mock.js"></script>
+<title>Guitar Studio (mock GitHub)</title>
+<!-- The real app (index.html) wired to an in-memory GitHub (tests/github-mock.js), for manual/automated testing.
+     Uses its own storage keys (gsMock.<device>.*) so it never touches real data or a real token.
+     Open several "devices" side by side: app-mock.html?dev=A, app-mock.html?dev=B (they share the mock repo,
+     which persists in localStorage across reloads).
+     Test tokens: github_pat_good (read+write), github_pat_readonly (push:false), github_pat_ro_finegrained
+     (push:true but writes refused), github_pat_norepo (404), github_pat_expired (401).
+     Console: GitHubMock.set({offline:true}), GitHubMock.files(), GitHubMock.reset(). -->
+<script src="github-mock.js"></script>
 <script>
-  DropboxMock.install({persistState:true});
-  DropboxMock.addFolder('/TJ/Guitar');
-  window.GS_CONFIG_OVERRIDE={DROPBOX_APP_KEY:'test-app-key', STORE_KEY:'gsMock.v1', DROPBOX_KEY:'gsMock.dropbox'};
-  fetch('../index.html',{cache:'no-store'}).then(r=>r.text()).then(html=>{
-    html=html.replace('<head>','<head><base href="../">');
-    document.open(); document.write(html); document.close();
-  });
+(async()=>{
+  const dev=(new URLSearchParams(location.search).get('dev')||'A').replace(/[^\w-]/g,'');
+  await GitHubMock.install({persistState:true});
+  GitHubMock.addToken('github_pat_good'); GitHubMock.addToken('github_pat_readonly',{write:false,push:false});
+  GitHubMock.addToken('github_pat_ro_finegrained',{write:false,push:true}); GitHubMock.addToken('github_pat_norepo',{access:false}); GitHubMock.addToken('github_pat_expired',{valid:false});
+  window.GS_CONFIG_OVERRIDE={STORE_KEY:`gsMock.${dev}.v1`, SYNC_KEY:`gsMock.${dev}.sync`, DEVICE_KEY:`gsMock.${dev}.device`, TOKEN_KEY:`gsMock.${dev}.token`};
+  const html=await (await fetch('../index.html',{cache:'no-store'})).text();
+  document.open(); document.write(html.replace('<head>','<head><base href="../">').replace('<title>','<title>['+dev+'] ')); document.close();
+})();
 </script>

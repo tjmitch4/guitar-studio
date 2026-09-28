@@ -27,7 +27,7 @@
     <button type="button" role="tab" id="tabbtn-songs" aria-controls="tab-songs" data-tab="songs">Songs</button>
   </nav>
   <div class="topbar-right">
-    <button type="button" class="sync-btn" id="syncBtn" data-state="unconfigured" aria-haspopup="dialog" title="Sync"><span class="sync-dot" aria-hidden="true"></span><span class="sync-lbl">Sync</span></button>
+    <button type="button" class="sync-btn" id="syncBtn" data-state="notconnected" aria-haspopup="dialog" title="Sync"><span class="sync-dot" aria-hidden="true"></span><span class="sync-lbl">Sync off</span></button>
     <label class="toggle" title="Sound on/off"><input type="checkbox" id="soundOn" checked aria-label="Sound"> 🔊</label>
     <select id="tonePreset" title="Guitar tone"></select>
     <button class="btn small ghost" id="toneTest" title="Play a test chord">▶</button>
@@ -321,13 +321,10 @@
     <div class="panel">
       <div class="panel-head">
         <h2>Session history</h2>
-        <details class="backup-inline">
-          <summary>Backup files</summary>
-          <div class="controls">
-            <button class="btn small ghost" id="exportBtn">Export JSON</button>
-            <label class="btn small ghost">Import JSON<input type="file" id="importFile" accept="application/json,.json" class="vh"></label>
-          </div>
-        </details>
+        <div class="controls">
+          <button class="btn small ghost" id="exportBtn">Export JSON</button>
+          <label class="btn small ghost">Import JSON<input type="file" id="importFile" accept="application/json,.json" class="vh"></label>
+        </div>
       </div>
       <div id="historyHost"></div>
     </div>
@@ -380,7 +377,7 @@
 
 <dialog id="syncDialog" aria-labelledby="syncTitle">
   <div class="sync-panel">
-    <div class="panel-head"><h3 id="syncTitle">Sync with Dropbox</h3><button type="button" class="icon-btn" id="syncClose" aria-label="Close">✕</button></div>
+    <div class="panel-head"><h3 id="syncTitle">Sync with GitHub</h3><button type="button" class="icon-btn" id="syncClose" aria-label="Close">✕</button></div>
     <div id="syncBody"></div>
   </div>
 </dialog>
@@ -390,8 +387,10 @@
 <script src="js/tone.js"></script>
 <script src="js/config.js"></script>
 <script src="js/sync-merge.js"></script>
+<script src="js/md-format.js"></script>
+<script src="js/sync-plan.js"></script>
 <script src="js/store.js"></script>
-<script src="js/dropbox.js"></script>
+<script src="js/github.js"></script>
 <script src="js/fretboard-ui.js"></script>
 <script src="js/theory-ui.js"></script>
 <script src="js/practice-ui.js"></script>

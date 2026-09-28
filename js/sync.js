@@ -1,89 +1,154 @@
-// Automatic sync of practice data through one JSON file in Dropbox. Local-first: the app always reads and
-// writes localStorage; this engine downloads the Dropbox copy, merges (js/sync-merge.js), saves locally,
-// and uploads the merged result with a revision check so two devices can't overwrite each other.
+// Automatic sync of practice data to the private GitHub repo tjmitch4/studio-data (folder guitar/), as readable
+// Markdown files. Local-first: the app always reads and writes localStorage; this engine reads the repo,
+// merges (js/sync-plan.js + js/sync-merge.js), saves locally, and writes only the files that changed, as ONE
+// commit per sync (Git Data API). If another device pushed in between, the ref update is refused
+// (not a fast-forward) and the whole round starts again (up to 3 tries).
+// With no token saved, nothing here touches the network and the app works exactly as before.
 window.Sync = (() => {
-  const C=window.GS_CONFIG, S=window.Store, D=window.DBX, SM=window.SyncMerge;
-  const DEBOUNCE_MS=2000, INTERVAL_MS=60000, MAX_RETRIES=3;
+  const C=window.GS_CONFIG, S=window.Store, GH=window.GH, SM=window.SyncMerge, P=window.SyncPlan;
+  const DEBOUNCE_MS=5000, INTERVAL_MS=120000, MAX_TRIES=3, FETCH_CONCURRENCY=6;
+  const repoId=()=>`${C.GH_OWNER}/${C.GH_REPO}@${C.GH_BRANCH}/${C.GH_PREFIX}`;
   let status='idle';        // idle | syncing | synced | offline | error
-  let running=null, again=false, debounceT=null, intervalT=null;
+  let running=null, again=false, debounceT=null, failures=0, nextTry=0;
   const listeners=[];
 
-  // What the header shows: unconfigured | signedout | reconnect | blocked | syncing | synced | offline | error
+  // ---- bookkeeping (never contains the token) ----
+  function loadMeta(){
+    try{ const m=JSON.parse(localStorage.getItem(C.SYNC_KEY)||'null'); if(m && typeof m==='object' && m.repo===repoId() && m.files && typeof m.files==='object') return m; }catch(e){}
+    return {repo:repoId(), files:{}};
+  }
+  let meta=loadMeta();
+  function saveMeta(patch){
+    Object.assign(meta, patch);
+    Object.keys(meta).forEach(k=>{ if(meta[k]===undefined) delete meta[k]; });
+    try{ localStorage.setItem(C.SYNC_KEY, JSON.stringify(meta)); }catch(e){ console.warn('Could not save sync bookkeeping', e); }
+  }
+  function deviceId(){
+    let id=null; try{ id=localStorage.getItem(C.DEVICE_KEY); }catch(e){}
+    if(!id || !/^[a-z0-9]{4,8}$/.test(id)){ id=Math.random().toString(36).slice(2,6).padEnd(4,'0'); try{ localStorage.setItem(C.DEVICE_KEY,id); }catch(e){} }
+    return id;
+  }
+  function platform(){
+    const ua=navigator.userAgent||'';
+    if(/iPhone/.test(ua)) return 'iPhone';
+    if(/iPad/.test(ua) || (navigator.platform==='MacIntel' && navigator.maxTouchPoints>1)) return 'iPad';
+    if(/Android/.test(ua)) return 'Android';
+    if(/Windows/.test(ua)) return 'Windows';
+    if(/Mac OS X|Macintosh/.test(ua)) return 'Mac';
+    if(/CrOS/.test(ua)) return 'ChromeOS';
+    if(/Linux/.test(ua)) return 'Linux';
+    return 'Browser';
+  }
+  const deviceLabel=()=>platform()+' '+deviceId();
+
+  // What the header shows: notconnected | blocked | syncing | synced | offline | error
   function view(){
-    const i=D.info();
-    if(!i.configured) return 'unconfigured';
-    if(!i.signedIn) return 'signedout';
-    if(i.needsReconnect) return 'reconnect';
+    if(!GH.token()) return 'notconnected';
     if(S.loadFailed()) return 'blocked';
-    if(status==='idle') return i.lastError?'error':(i.lastSyncedAt?'synced':'syncing');
+    if(meta.authError) return 'error';
+    if(status==='idle') return meta.lastError?'error':(meta.lastSyncedAt?'synced':'syncing');
     return status;
   }
   const emit=()=>listeners.forEach(fn=>{ try{ fn(view()); }catch(e){ console.error(e); } });
   const setStatus=(s)=>{ status=s; emit(); };
 
-  // One full download -> merge -> save -> upload round. Retries on a revision conflict.
+  async function fetchAll(paths, tree){
+    const out={}; let i=0;
+    const worker=async()=>{ while(i<paths.length){ const p=paths[i++]; out[p]=await GH.blobText(tree.get(p)); } };
+    await Promise.all(Array.from({length:Math.min(FETCH_CONCURRENCY, paths.length)}, worker));
+    return out;
+  }
+  // Tombstones whose file removal is now committed can be forgotten (deterministic ids are kept in settings.md).
+  function dropTombstones(drop){
+    const d=S.get(); let changed=false;
+    drop.forEach(({kind,id,updatedAt})=>{
+      const l=d.deleted && d.deleted[kind]; if(!l) return;
+      const i=l.findIndex(t=>t.id===id && (+t.updatedAt||0)===(+updatedAt||0));
+      if(i>=0){ l.splice(i,1); changed=true; }
+    });
+    if(changed) S.save({silent:true});
+  }
+
+  // One full round: read repo -> merge -> save locally -> commit the changed files.
   async function runOnce(){
     setStatus('syncing');
     let changedLocal=false;
     try{
-      await D.resolveRoot();
-      for(let attempt=0;;attempt++){
-        const remote=await D.download(C.DATA_PATH);   // null = no file yet
-        let remoteData=null;
-        if(remote){
-          try{ remoteData=JSON.parse(remote.text); }catch(e){ remoteData=undefined; }
-          if(!remoteData || typeof remoteData!=='object' || Array.isArray(remoteData))
-            throw new D.DbxError('api','The Dropbox copy of your data is unreadable, so it was left alone. Your data on this device is safe.');
+      for(let attempt=1;;attempt++){
+        if(S.loadFailed()) throw new GH.GhError('blocked','Local data could not be read — sync is paused.');
+        const head=await GH.headSha();
+        let tree, treeSha;
+        if(meta.head===head && meta.treeSha){ // nothing new on GitHub since our last sync: the file map is current
+          treeSha=meta.treeSha; tree=new Map(Object.entries(meta.files).map(([p,f])=>[p,f.sha]));
+        } else {
+          treeSha=await GH.commitTreeSha(head);
+          tree=new Map((await GH.listPrefix(treeSha, C.GH_PREFIX)).map(e=>[e.path,e.sha]));
         }
-        if(S.loadFailed()) throw new D.DbxError('api','Local data could not be read — sync is paused.');
+        const fetched=await fetchAll(P.needFetch(tree, meta, S.get()), tree);
+        if(S.loadFailed()) throw new GH.GhError('blocked','Local data could not be read — sync is paused.');
         const local=S.get();
-        const merged=remoteData ? SM.merge(local, remoteData) : SM.normalize(JSON.parse(JSON.stringify(local)));
-        if(!SM.equal(merged, local)){
-          if(!S.replaceData(merged)) throw new D.DbxError('api','Could not save the merged data on this device.');
+        const r=P.mergeRemote(local, meta, tree, fetched);
+        r.warnings.forEach(w=>console.warn('Guitar Studio sync: '+w));
+        if(!SM.equal(r.merged, local)){
+          if(!S.replaceData(r.merged)) throw new GH.GhError('api','Could not save the merged data on this device.');
           changedLocal=true;
         }
-        if(remoteData && SM.equal(S.get(), remoteData)) break; // Dropbox already has exactly this
-        try{
-          await D.upload(C.DATA_PATH, JSON.stringify(S.get()), remote ? {'.tag':'update', update:remote.rev} : 'add');
-          break;
-        }catch(e){
-          if(e.kind==='conflict' && attempt<MAX_RETRIES) continue; // someone else wrote first: re-download and merge again
-          throw e;
+        const snap=JSON.parse(JSON.stringify(S.get())); // edits made while we upload are picked up by the next round
+        const plan=await P.planWrites(snap, meta, tree, r.keyPaths, r.bad, {sha:P.gitBlobSha, today:S.localDate(), device:deviceLabel()});
+        let newHead=head, newTree=treeSha;
+        if(plan.writes.length){
+          newTree=await GH.createTree(treeSha, plan.writes);
+          const commit=await GH.createCommit(`guitar: sync (${plan.changed||plan.writes.length} changed) from ${deviceLabel()}`, newTree, head);
+          try{ await GH.updateRef(commit); newHead=commit; }
+          catch(e){
+            if(e.kind==='conflict'){ if(attempt<MAX_TRIES) continue; throw new GH.GhError('server','Another device kept syncing at the same moment — trying again shortly.'); }
+            throw e;
+          }
         }
+        saveMeta({head:newHead, treeSha:newTree, files:plan.files, lastSyncedAt:Date.now(), lastError:null, note:undefined, authError:undefined,
+          warnings:r.warnings.length?r.warnings:(plan.files && Object.values(plan.files).some(f=>f.bad)?meta.warnings:undefined)});
+        if(plan.drop.length) dropTombstones(plan.drop);
+        break;
       }
-      D.saveMeta({lastSyncedAt:Date.now(), lastError:null});
-      status='synced';
+      status='synced'; failures=0; nextTry=0;
     }catch(e){
-      if(e.kind==='network' || e.kind==='transient'){ status='offline'; }            // retried silently on the next trigger
-      else if(e.kind==='auth'){ status='error'; D.saveMeta({lastError:e.message}); }
-      else { status='error'; D.saveMeta({lastError:e.message||String(e)}); console.warn('Sync failed', e); }
+      const k=e && e.kind;
+      failures++;
+      nextTry=Date.now()+Math.min(15*60000, 30000*Math.pow(2, failures-1));
+      if(k==='network' || k==='server'){ status='offline'; saveMeta({note:k==='server'?e.message:undefined}); }   // quiet: retried later
+      else if(k==='ratelimit'){ status='offline'; nextTry=Math.max(nextTry, e.until||0); saveMeta({note:e.message}); }
+      else if(k==='auth'){ status='error'; saveMeta({authError:true, lastError:'GitHub rejected the saved token (expired or revoked). Paste a new token below.'}); }
+      else if(k==='notfound'){ status='error'; saveMeta({lastError:`Can't find ${C.GH_OWNER}/${C.GH_REPO} (branch ${C.GH_BRANCH}) with this token. Check the token's repository access.`}); }
+      else if(k==='forbidden'){ status='error'; saveMeta({lastError:'The token can\'t write to the repo. It needs Repository permissions → Contents: Read and write.'}); }
+      else if(k==='blocked'){ status='idle'; }
+      else { status='error'; saveMeta({lastError:(e && e.message)||String(e)}); console.warn('Sync failed', e); }
     }finally{
       if(changedLocal){ try{ window.App && window.App.refreshData(); }catch(e){ console.error(e); } }
       emit();
     }
-    return status;
+    return view();
   }
-  // Run a sync now (or once more after the current one, if one is in flight).
-  function syncNow(){
+  // Run a sync now (or once more after the current one). Automatic triggers respect the backoff; "Sync now" doesn't.
+  function syncNow(opts){
+    const manual=!!(opts && opts.manual);
     clearTimeout(debounceT); debounceT=null;
-    if(!D.signedIn() || D.info().needsReconnect){ emit(); return Promise.resolve(view()); }
-    if(S.loadFailed()){ emit(); return Promise.resolve('blocked'); }  // never upload unreadable/blocked local data
+    if(!GH.token()){ emit(); return Promise.resolve('notconnected'); }
+    if(S.loadFailed()){ emit(); return Promise.resolve('blocked'); } // never upload unreadable/blocked local data
+    if(!manual && (meta.authError || Date.now()<nextTry)){ emit(); return Promise.resolve(view()); }
     if(running){ again=true; return running; }
     running=(async()=>{
       let r;
-      do{ again=false; r=await runOnce(); }while(again && r==='synced');
-      running=null;
-      try{ window.VideosUI && window.VideosUI.syncHook && window.VideosUI.syncHook(); }catch(e){}
+      try{ do{ again=false; r=await runOnce(); }while(again && r==='synced'); }
+      finally{ running=null; }
       return r;
     })();
     return running;
   }
-  function schedule(ms){ if(!D.signedIn()) return; clearTimeout(debounceT); debounceT=setTimeout(syncNow, ms==null?DEBOUNCE_MS:ms); }
+  function schedule(ms){ if(!GH.token()) return; clearTimeout(debounceT); debounceT=setTimeout(()=>syncNow(), ms==null?DEBOUNCE_MS:ms); }
 
   // ---------------- UI: header indicator + panel ----------------
-  const LABEL={unconfigured:'Sync off', signedout:'Sync off', reconnect:'Reconnect', blocked:'Sync paused', syncing:'Syncing…', synced:'Synced', offline:'Offline', error:'Sync error'};
+  const LABEL={notconnected:'Sync off', blocked:'Sync paused', syncing:'Syncing…', synced:'Synced', offline:'Offline', error:'Sync error'};
   const esc=S.esc;
-  const isStandaloneIOS=()=>S.isIOS && (navigator.standalone===true || (window.matchMedia && matchMedia('(display-mode: standalone)').matches));
   function ago(ms){
     if(!ms) return 'never';
     const s=Math.round((Date.now()-ms)/1000);
@@ -95,77 +160,87 @@ window.Sync = (() => {
     const v=view();
     b.dataset.state=v;
     b.querySelector('.sync-lbl').textContent=LABEL[v]||'Sync';
-    const i=D.info();
-    b.title = v==='unconfigured' ? 'Sync not configured yet' : v==='synced' ? 'Synced with Dropbox '+ago(i.lastSyncedAt) : (LABEL[v]||'Sync');
-    b.setAttribute('aria-label','Dropbox sync: '+b.title);
+    b.title = v==='notconnected' ? 'Sync is off — tap to connect GitHub' : v==='synced' ? 'Synced with GitHub '+ago(meta.lastSyncedAt) : (LABEL[v]||'Sync');
+    b.setAttribute('aria-label','GitHub sync: '+b.title);
   }
-  let codeOpen=false;
+  const TOKEN_URL='https://github.com/settings/personal-access-tokens/new';
+  function howTo(open){
+    return `<details class="sync-howto" ${open?'open':''}><summary>How to make a token (2 minutes, once per browser)</summary>
+      <ol>
+        <li>Open <a href="${TOKEN_URL}" target="_blank" rel="noopener">GitHub → new fine-grained token</a> (signed in as <b>${esc(C.GH_OWNER)}</b>).</li>
+        <li><b>Token name:</b> e.g. “Studio apps – iPhone”. <b>Expiration:</b> your choice (you'll paste a new one when it runs out).</li>
+        <li><b>Repository access:</b> <i>Only select repositories</i> → <b>${esc(C.GH_REPO)}</b>.</li>
+        <li><b>Permissions → Repository permissions → Contents:</b> <i>Read and write</i>. Nothing else is needed.</li>
+        <li><b>Generate token</b>, copy it, and paste it here.</li>
+      </ol>
+      <p class="hint">The token stays in this browser only. Lift Studio uses the same one, so pasting it here connects both apps in this browser.</p>
+    </details>`;
+  }
+  function tokenForm(label){
+    return `<form class="sync-token" id="ghForm" autocomplete="off">
+        <label for="ghToken">${label}</label>
+        <div class="btn-row"><input type="password" id="ghToken" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="github_pat_…" aria-describedby="ghErr"><button type="submit" class="btn" id="ghConnect">Connect</button></div>
+        <p class="sync-err" id="ghErr" role="alert"></p>
+      </form>`;
+  }
   function renderPanel(){
     const dlg=document.getElementById('syncDialog'); if(!dlg || !dlg.open) return;
-    const host=dlg.querySelector('#syncBody'); const i=D.info(); const v=view();
-    const where=`<code>${esc(C.DATA_PATH)}</code>`;
-    const codeBlock=`<div class="sync-code ${codeOpen?'':'hidden'}" id="syncCodeBox">
-        <p class="hint">1. <button type="button" class="btn small" id="syncOpenCode">Open Dropbox</button> and tap <b>Allow</b>. Dropbox shows a code.<br>2. Copy it, come back here, and paste it:</p>
-        <div class="btn-row"><input type="text" id="syncCode" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="Paste the code from Dropbox" aria-label="Code from Dropbox"><button type="button" class="btn small" id="syncCodeGo">Connect</button></div>
-      </div>`;
+    const host=dlg.querySelector('#syncBody'); const v=view();
+    // keep a half-typed token and any message across re-renders
+    const prevTok=host.querySelector('#ghToken'), prevErr=host.querySelector('#ghErr');
+    const keepTok=prevTok?prevTok.value:'', keepErr=prevErr?prevErr.textContent:'', keepOpen=!!(host.querySelector('#ghReplace')&&host.querySelector('#ghReplace').open);
+    if(host.querySelector('#ghConnect') && host.querySelector('#ghConnect').disabled) return; // mid-check: don't clobber
+    const where=`<a href="${esc(GH.repoUrl())}/tree/${esc(C.GH_BRANCH)}/${esc(C.GH_PREFIX.replace(/\/$/,''))}" target="_blank" rel="noopener"><code>${esc(C.GH_OWNER)}/${esc(C.GH_REPO)}/${esc(C.GH_PREFIX)}</code></a>`;
     let h='';
-    if(v==='unconfigured'){
-      h=`<p><b>Sync not configured yet.</b> Everything is saved on this device only, just like before.</p><p class="hint">To turn on Dropbox sync, the Dropbox app key goes in <code>js/config.js</code> (see the README).</p>`;
-    } else if(v==='signedout' || v==='reconnect'){
-      const primaryCode=isStandaloneIOS();
-      h=`<p>${v==='reconnect'?'<b>Dropbox needs you to sign in again.</b> Your data on this device is safe.':'Connect Dropbox and your sessions, songs, trainer stats and settings sync automatically between your devices.'}</p>
-        <p class="hint">Data file: ${where}${primaryCode?'':'. You\'ll sign in on Dropbox and come straight back.'}</p>
-        <div class="btn-row"><button type="button" class="btn" id="syncConnect">Connect Dropbox</button></div>
-        ${primaryCode?'':`<p class="hint"><button type="button" class="linkish" id="syncUseCode" aria-expanded="${codeOpen}">Having trouble? Use a code instead</button></p>`}
-        ${codeBlock}`;
+    if(v==='notconnected'){
+      h=`<p>Sync your sessions, songs, trainer stats, video notes and settings to your private GitHub repo ${where} as readable Markdown files. Every device stays in step, and <code>guitar/PROGRESS.md</code> gives Claude the full picture for coaching.</p>
+        <p class="hint">Right now everything is saved on this device only, just like before.</p>
+        ${howTo(true)}${tokenForm('Paste your token')}`;
     } else {
-      const st={syncing:'Syncing…', synced:'Up to date', offline:'Offline — will sync when you\'re back online', error:'Last sync failed', blocked:'Paused: this device\'s saved data couldn\'t be read, so nothing is uploaded.'}[v]||v;
+      const st={syncing:'Syncing…', synced:'Up to date', offline:'Offline or GitHub unreachable — retrying automatically', error:'Sync problem', blocked:'Paused: this device\'s saved data couldn\'t be read, so nothing is uploaded.'}[v]||v;
+      const warn=(meta.warnings||[]);
       h=`<p><span class="sync-dot" data-state="${v}"></span> <b>${esc(st)}</b></p>
-        <p class="hint">Last synced: ${esc(ago(i.lastSyncedAt))}${i.lastError&&v==='error'?`<br><span class="sync-err">${esc(i.lastError)}</span>`:''}</p>
-        ${i.lastError && /Couldn't find/.test(i.lastError) ? `<p class="hint">If this is the first time, the app can create it. <button type="button" class="btn small" id="syncCreate">Create ${esc(C.DATA_DIR)} and sync</button></p>`:''}
-        <p class="hint">Data file: ${where}${i.pathRoot&&i.pathRoot.prefix?` (in <code>${esc(i.pathRoot.prefix)}</code>)`:''}. Videos you record or import upload to <code>${esc(C.VIDEO_DIR)}</code>.</p>
-        <div class="btn-row"><button type="button" class="btn" id="syncNowBtn" ${v==='syncing'||v==='blocked'?'disabled':''}>Sync now</button><button type="button" class="btn ghost" id="syncSignOut">Sign out</button></div>`;
+        <p class="hint">Last synced: ${esc(ago(meta.lastSyncedAt))}${meta.note&&v==='offline'?`<br>${esc(meta.note)}`:''}${meta.lastError&&v==='error'?`<br><span class="sync-err">${esc(meta.lastError)}</span>`:''}</p>
+        ${warn.length?`<div class="hint"><b>Skipped files</b> (couldn't be read, left untouched on GitHub — fix or delete them there):<ul>${warn.map(w=>`<li>${esc(w)}</li>`).join('')}</ul></div>`:''}
+        <p class="hint">Repo: ${where}. One commit per sync; only changed files are written.</p>
+        <div class="btn-row"><button type="button" class="btn" id="syncNowBtn" ${v==='syncing'||v==='blocked'?'disabled':''}>Sync now</button><a class="btn ghost" href="${esc(GH.repoUrl())}" target="_blank" rel="noopener">Open repo</a><button type="button" class="btn ghost" id="syncDisconnect">Disconnect</button></div>
+        <details class="sync-howto" id="ghReplace" ${meta.authError||keepOpen?'open':''}><summary>Replace token</summary>${howTo(false)}${tokenForm('New token')}</details>`;
     }
-    h+=`<details class="backup-tools"><summary>Backup files (export / import JSON)</summary>
-        <p class="hint">Not needed for sync — handy for an extra backup. Import merges a backup into this device; nothing is deleted.</p>
-        <div class="btn-row"><button type="button" class="btn small ghost" id="syncExport">Export JSON</button><label class="btn small ghost">Import JSON<input type="file" id="syncImport" accept="application/json,.json" class="vh"></label></div>
-      </details>`;
     host.innerHTML=h;
+    const tok=host.querySelector('#ghToken'); if(tok) tok.value=keepTok;
+    const err=host.querySelector('#ghErr'); if(err) err.textContent=keepErr;
     const on=(id,fn,ev)=>{ const el=host.querySelector('#'+id); if(el) el.addEventListener(ev||'click',fn); };
-    on('syncConnect',()=>connect(isStandaloneIOS()?'code':'redirect'));
-    on('syncUseCode',()=>{ codeOpen=!codeOpen; renderPanel(); });
-    on('syncOpenCode',()=>connect('code'));
-    on('syncCodeGo',()=>submitCode());
-    on('syncCode',(e)=>{ if(e.key==='Enter'){ e.preventDefault(); submitCode(); } },'keydown');
-    on('syncNowBtn',()=>syncNow());
-    on('syncCreate',()=>{ D.useHomeRoot(); D.saveMeta({lastError:null}); syncNow(); });
-    on('syncSignOut',async()=>{ if(!confirm('Sign out of Dropbox on this device? Your data stays on this device, and in Dropbox.')) return; await D.signOut(); status='idle'; emit(); window.App && window.App.toast('Signed out of Dropbox'); });
-    on('syncExport',async()=>{ const r=await S.exportJSON(); if(r!=='cancelled') window.App.toast('Backup exported'); });
-    on('syncImport',(e)=>{ const f=e.target.files[0]; e.target.value=''; if(f && window.PracticeUI) window.PracticeUI.importFile(f); },'change');
+    on('ghForm',(e)=>{ e.preventDefault(); connect(); },'submit');
+    on('syncNowBtn',()=>syncNow({manual:true}));
+    on('syncDisconnect',()=>{
+      if(!confirm('Disconnect GitHub in this browser?\n\nYour data stays on this device and in the repo. Lift Studio shares the same token, so it disconnects too.')) return;
+      GH.clearToken(); status='idle'; failures=0; nextTry=0; saveMeta({authError:undefined, lastError:null, note:undefined}); emit(); window.App && window.App.toast('Disconnected from GitHub');
+    });
   }
-  // Open Dropbox's sign-in. Keep this synchronous from the tap (PKCE is prepared when the panel opens) so popups aren't blocked.
-  function connect(mode){
-    let url;
-    try{ url=D.buildAuthUrl(mode); }
-    catch(e){ D.prepareAuth().then(()=>connect(mode)).catch(err=>alert('Could not start Dropbox sign-in: '+err.message)); return; }
-    if(mode==='redirect'){ location.assign(url); return; }
-    codeOpen=true;
-    const w=window.open(url,'_blank','noopener');
-    if(!w){ /* popup blocked (or noopener returns null): the code box stays open; offer a plain link */ }
-    D.prepareAuth().catch(()=>{}); // ready for another attempt
-    renderPanel();
-    const box=document.getElementById('syncCode'); if(box) setTimeout(()=>box.focus(),300);
-  }
-  async function submitCode(){
-    const inp=document.getElementById('syncCode'); const code=inp&&inp.value;
-    try{ await D.exchangeCode(code); codeOpen=false; status='idle'; emit(); window.App.toast('Connected to Dropbox'); syncNow(); }
-    catch(e){ alert(e.message||'Could not connect to Dropbox'); }
+  let checking=false;
+  async function connect(){
+    const dlg=document.getElementById('syncDialog'); const inp=dlg.querySelector('#ghToken'), btn=dlg.querySelector('#ghConnect'), err=dlg.querySelector('#ghErr');
+    const tok=(inp.value||'').trim().replace(/^Bearer\s+/i,'');
+    if(!tok){ err.textContent='Paste the token first.'; inp.focus(); return; }
+    if(/\s/.test(tok)){ err.textContent='That doesn\'t look like a token (it contains spaces).'; return; }
+    if(checking) return; checking=true;
+    err.textContent=''; btn.disabled=true; btn.textContent='Checking…';
+    try{
+      await GH.validate(tok);
+      GH.setToken(tok); inp.value='';
+      status='idle'; failures=0; nextTry=0; saveMeta({authError:undefined, lastError:null, note:undefined});
+      btn.disabled=false; btn.textContent='Connect';
+      window.App && window.App.toast('Connected to GitHub');
+      emit(); syncNow({manual:true});
+    }catch(e){
+      btn.disabled=false; btn.textContent='Connect';
+      err.textContent = e && e.kind==='network' ? 'Can\'t reach GitHub — check your connection and try again.' : ((e && e.message) || 'Could not check the token.');
+    }finally{ checking=false; }
   }
   function openPanel(){
     const dlg=document.getElementById('syncDialog'); if(!dlg) return;
     if(!dlg.open) dlg.showModal();
     renderPanel();
-    if(D.configured() && !D.signedIn()) D.prepareAuth().catch(e=>console.warn('PKCE unavailable', e));
   }
 
   function init(){
@@ -173,20 +248,17 @@ window.Sync = (() => {
     const close=document.getElementById('syncClose'); if(close) close.addEventListener('click',()=>document.getElementById('syncDialog').close());
     listeners.push(renderButton, renderPanel);
     renderButton();
-    if(!D.configured()) return; // app behaves exactly as before
+    // Lift Studio (same origin) may connect/disconnect the shared token in another tab.
+    window.addEventListener('storage',(e)=>{ if(e.key===C.TOKEN_KEY){ saveMeta({authError:undefined}); failures=0; nextTry=0; emit(); if(GH.token() && C.SYNC_AUTO!==false) syncNow(); } });
     if(C.SYNC_AUTO===false) return; // test harness drives sync by hand
     S.onChange(()=>schedule());
     document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='visible') syncNow(); });
-    window.addEventListener('online',()=>syncNow());
-    window.addEventListener('offline',()=>{ if(D.signedIn()) setStatus('offline'); });
-    intervalT=setInterval(()=>{ if(document.visibilityState==='visible') syncNow(); else renderButton(); }, INTERVAL_MS);
-    // Returning from Dropbox's sign-in page?
-    D.completeRedirect().then(done=>{
-      if(done){ window.App && window.App.toast('Connected to Dropbox'); }
-      syncNow();
-    }).catch(e=>{ D.saveMeta({lastError:e.message}); emit(); alert('Dropbox sign-in failed: '+e.message); });
+    window.addEventListener('online',()=>{ nextTry=0; syncNow(); });
+    window.addEventListener('offline',()=>{ if(GH.token()) setStatus('offline'); });
+    setInterval(()=>{ if(document.visibilityState==='visible') syncNow(); renderButton(); }, INTERVAL_MS);
+    syncNow();
   }
   document.addEventListener('DOMContentLoaded',()=>setTimeout(init,0)); // after the tabs have initialised
 
-  return {syncNow, schedule, view, openPanel, onStatus:(fn)=>listeners.push(fn), _runOnce:runOnce};
+  return {syncNow, schedule, view, openPanel, deviceLabel, onStatus:(fn)=>listeners.push(fn), _meta:()=>meta, _reloadMeta:()=>{ meta=loadMeta(); status='idle'; failures=0; nextTry=0; }};
 })();

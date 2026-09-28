@@ -280,31 +280,35 @@ button.lvl{display:block;width:100%;color:var(--text)}
   .tabs button{padding:.45rem .7rem}
 }
 
-/* ---------- Dropbox sync: header indicator + panel ---------- */
+/* ---------- GitHub sync: header indicator + panel ---------- */
 .sync-btn{display:inline-flex;align-items:center;gap:.35rem;background:transparent;border:1px solid var(--border);border-radius:999px;color:var(--muted);font:inherit;font-size:.82rem;padding:.2rem .6rem;cursor:pointer;white-space:nowrap}
 .sync-btn:hover{border-color:var(--accent);color:var(--text)}
 .sync-dot{display:inline-block;width:.6rem;height:.6rem;border-radius:50%;background:var(--muted);flex:none}
 [data-state="synced"] .sync-dot,.sync-dot[data-state="synced"]{background:var(--ok)}
 [data-state="syncing"] .sync-dot,.sync-dot[data-state="syncing"]{background:var(--sel);animation:syncPulse 1s ease-in-out infinite alternate}
 [data-state="offline"] .sync-dot,.sync-dot[data-state="offline"]{background:var(--accent2)}
-[data-state="error"] .sync-dot,.sync-dot[data-state="error"],[data-state="reconnect"] .sync-dot,[data-state="blocked"] .sync-dot,.sync-dot[data-state="blocked"]{background:var(--danger)}
-[data-state="unconfigured"] .sync-dot,[data-state="signedout"] .sync-dot{background:transparent;border:1.5px solid var(--muted)}
+[data-state="error"] .sync-dot,.sync-dot[data-state="error"],[data-state="blocked"] .sync-dot,.sync-dot[data-state="blocked"]{background:var(--danger)}
+[data-state="notconnected"] .sync-dot{background:transparent;border:1.5px solid var(--muted)}
 @keyframes syncPulse{from{opacity:1}to{opacity:.35}}
+@media (prefers-reduced-motion:reduce){ [data-state="syncing"] .sync-dot,.sync-dot[data-state="syncing"]{animation:none} }
 .sync-panel .panel-head{display:flex;justify-content:space-between;align-items:center;gap:.5rem}
 .sync-panel h3{margin:0}
 .sync-panel p{margin:.5rem 0}
-.sync-panel .btn-row input[type=text]{flex:1 1 12rem;min-width:0;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:.45rem .6rem;font:inherit}
-.sync-err{color:var(--danger)}
+.sync-panel ol{margin:.4rem 0;padding-left:1.3rem}
+.sync-panel li{margin:.2rem 0}
+.sync-panel ul{margin:.3rem 0;padding-left:1.2rem}
+.sync-howto{margin:.6rem 0}
+.sync-howto summary{cursor:pointer;color:var(--sel)}
+.sync-token{margin-top:.6rem}
+.sync-token label{display:block;font-weight:600;margin-bottom:.3rem}
+.sync-token .btn-row input{flex:1 1 12rem;min-width:0;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:.45rem .6rem;font:inherit}
+.sync-err{color:var(--danger);min-height:1em}
 .sync-panel code{overflow-wrap:anywhere}
-.linkish{background:none;border:0;padding:0;color:var(--sel);text-decoration:underline;cursor:pointer;font:inherit}
-.backup-tools{margin-top:1rem;border-top:1px solid var(--border);padding-top:.6rem}
-.backup-tools summary,.backup-inline summary{cursor:pointer;color:var(--muted);font-size:.85rem}
-.backup-inline{font-size:.9rem}
-.backup-inline[open] .controls{margin-top:.4rem}
-.up-state.warn{color:var(--accent-text);font-weight:700}
+.sync-panel a{color:var(--sel)}
+.sync-panel a.btn{text-decoration:none;color:inherit}
 @media (pointer:coarse){ .sync-btn{min-height:36px} }
 @media (max-width:560px){
   .sync-btn{padding:.2rem .45rem}
   .sync-btn .sync-lbl{display:none} /* dot only on phones; the panel has the words */
-  .sync-btn[data-state="error"] .sync-lbl,.sync-btn[data-state="reconnect"] .sync-lbl{display:inline}
+  .sync-btn[data-state="error"] .sync-lbl{display:inline}
 }

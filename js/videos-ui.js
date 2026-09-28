@@ -1,34 +1,25 @@
-// Practice videos: upload to Dropbox (when signed in), or link the Dropbox "Practice Videos" folder, record
-// in-browser, import, review, nudge.
+// Practice videos: link the Dropbox "Practice Videos" folder, record in-browser, import, review, nudge.
 //
-// Where a new recording/import goes, in order:
-// 1. Signed in to Dropbox (see js/sync.js): uploaded through the API to GS_CONFIG.VIDEO_DIR. It waits in an
-//    IndexedDB queue first, so if you're offline or the app is closed it uploads automatically later.
-//    The list shows everything in that Dropbox folder and plays it through a temporary link.
-// 2. Folder linked (File System Access API — Chrome/Edge/Arc on a computer): written straight into it.
-// 3. Otherwise kept in a "this session" list with a Save button (Share sheet on iOS → Save Video / Save to
-//    Files, a normal download elsewhere).
+// Browser support:
+// - Folder linking uses the File System Access API (showDirectoryPicker) — Chrome/Edge/Arc on a computer only.
+//   iPhone/iPad Safari, Firefox and Android don't have it. There, recordings/imports are kept in a
+//   "this session" list and saved with a Save button (Share sheet on iOS → Save Video / Save to Files,
+//   a normal download elsewhere).
 // - Recording needs getUserMedia + MediaRecorder (Safari 14.5+, Chrome, Firefox, Edge) and https.
 window.VideosUI = (() => {
   const $=(s)=>document.querySelector(s);
-  const S=window.Store, C=window.GS_CONFIG||{};
+  const S=window.Store;
   const hasFS = 'showDirectoryPicker' in window;
   const hasRec = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) && typeof window.MediaRecorder!=='undefined';
-  const VIDEO_RE=/\.(mp4|mov|webm|m4v|mkv)$/i;
   let dirHandle=null, recorder=null, chunks=[], stream=null, recStart=0, recTimer=null;
   let files=[];   // videos in the linked folder: {name,handle,size,modified}
-  let dbxFiles=[];// videos in the Dropbox folder (API): {name,path,size,modified,dbx:true}
-  let dbxListError=null;
-  let local=[];   // videos held in memory this session: {name,file,size,modified,local:true,saved,queued,uploading,progress}
-  let shown=[];   // what the list currently renders (local + folder + Dropbox), indexed by data-i
+  let local=[];   // videos held in memory this session (no folder linked): {name,file,size,modified,local:true,saved}
+  let shown=[];   // what the list currently renders (local + folder), indexed by data-i
   let needsReconnect=false; // folder handle restored but permission must be re-granted by a tap
-  let queueBusy=false;
   const liveURLs=new Set(); // object URLs of opened videos; revoked whenever the list re-renders
-  const dbxOn=()=>!!(window.DBX && window.DBX.signedIn() && !window.DBX.info().needsReconnect);
 
   // ---- IndexedDB for the directory handle ----
-  // v2 adds a 'pending' store: unsaved in-app recordings survive the app being closed (iOS has no beforeunload),
-  // and recordings/imports waiting to upload to Dropbox.
+  // v2 adds a 'pending' store: unsaved in-app recordings survive the app being closed (iOS has no beforeunload).
   function idb(){ return new Promise((res,rej)=>{ const r=indexedDB.open('guitarStudio',2); r.onupgradeneeded=()=>{ const db=r.result; if(!db.objectStoreNames.contains('kv')) db.createObjectStore('kv'); if(!db.objectStoreNames.contains('pending')) db.createObjectStore('pending'); }; r.onsuccess=()=>res(r.result); r.onerror=()=>rej(r.error); }); }
   async function pendingPut(name,rec){ try{ const db=await idb(); await new Promise((res,rej)=>{ const tx=db.transaction('pending','readwrite'); tx.objectStore('pending').put(rec,name); tx.oncomplete=res; tx.onerror=()=>rej(tx.error); tx.onabort=()=>rej(tx.error); }); return true; }catch(e){ console.warn('Could not keep recording in browser storage',e); return false; } }
   async function pendingDel(name){ try{ const db=await idb(); await new Promise((res)=>{ const tx=db.transaction('pending','readwrite'); tx.objectStore('pending').delete(name); tx.oncomplete=res; tx.onerror=res; }); }catch(e){} }
@@ -38,7 +29,6 @@ window.VideosUI = (() => {
 
   const meta=()=>{ const d=S.get(); if(!d.videos) d.videos={}; return d.videos; }; // name -> {song,notes,reviewed,date,updatedAt}
   const esc=S.esc;
-  const toast=(m,o)=>{ try{ window.App.toast(m,o); }catch(e){} };
 
   async function pickFolder(){
     if(!hasFS) return;
@@ -53,21 +43,11 @@ window.VideosUI = (() => {
   }
   async function listFiles(){
     files=[]; if(!dirHandle) return;
-    for await (const [name,h] of dirHandle.entries()){ if(h.kind==='file' && VIDEO_RE.test(name)){ const f=await h.getFile(); files.push({name,handle:h,size:f.size,modified:f.lastModified}); } }
+    for await (const [name,h] of dirHandle.entries()){ if(h.kind==='file' && /\.(mp4|mov|webm|m4v|mkv)$/i.test(name)){ const f=await h.getFile(); files.push({name,handle:h,size:f.size,modified:f.lastModified}); } }
     files.sort((a,b)=>b.modified-a.modified);
-  }
-  async function listDropbox(){
-    if(!dbxOn()){ dbxFiles=[]; dbxListError=null; return; }
-    try{
-      await window.DBX.resolveRoot();
-      const entries=await window.DBX.listFolder(C.VIDEO_DIR);
-      dbxFiles=entries.filter(e=>VIDEO_RE.test(e.name)).map(e=>({name:e.name, path:e.path_lower, size:e.size||0, modified:Date.parse(e.client_modified||e.server_modified)||Date.now(), dbx:true}));
-      dbxListError=null;
-    }catch(e){ dbxListError=e; console.warn('Could not list Dropbox videos', e); }
   }
   async function refresh(fromTap=true){
     if(dirHandle){ try{ if(await ensurePermission(fromTap!==false)){ needsReconnect=false; await listFiles(); } else needsReconnect=true; }catch(e){ console.warn(e); needsReconnect=true; } }
-    await listDropbox();
     render();
   }
 
@@ -106,22 +86,11 @@ window.VideosUI = (() => {
     $('#vidNotes').value='';
     const where=await store(name,blob,{fresh:true});
     const kept=local.find(l=>l.name===name);
-    toast(where==='dropbox'?'Recording uploaded to Dropbox':where==='queued'?'Recording kept — it uploads to Dropbox when you\'re back online':where==='folder'?'Recording saved to folder':(kept&&!kept.saved?'Recording ready — open it and tap Save video':'Recording saved'));
+    try{ window.App.toast(where==='folder'?'Recording saved to folder':(kept&&!kept.saved?'Recording ready — open it and tap Save video':'Recording saved')); }catch(e){}
     await refresh();
   }
-  const toFile=(blob,name)=>(window.File&&!(blob instanceof File))? new File([blob],name,{type:blob.type,lastModified:Date.now()}) : blob;
-  // Put a recorded/imported video somewhere: Dropbox if signed in, else the linked folder, else the session list.
+  // Put a recorded/imported video somewhere: the linked folder if we have one, otherwise the session list.
   async function store(name,blob,{fresh=false}={}){
-    if(dbxOn()){
-      const file=toFile(blob,name); const modified=blob.lastModified||Date.now();
-      const queued=await pendingPut(name,{blob:file,modified,dbx:true}); // survives a closed app / no signal
-      local=local.filter(x=>x.name!==name);
-      const item={name,file,size:blob.size,modified,local:true,saved:false,queued};
-      local.unshift(item); render();
-      if(await uploadOne(item)) return 'dropbox';
-      if(!queued){ item.queued=false; if(fresh && !S.isIOS){ await S.saveFile(blob,name); item.saved=true; } return 'session'; }
-      return 'queued';
-    }
     if(dirHandle){
       try{
         if(await ensurePermission()){
@@ -130,7 +99,7 @@ window.VideosUI = (() => {
         }
       }catch(e){ console.warn('Folder write failed; keeping the video in this session instead', e); }
     }
-    const file=toFile(blob,name);
+    const file=(window.File&&!(blob instanceof File))? new File([blob],name,{type:blob.type,lastModified:Date.now()}) : blob;
     local=local.filter(x=>x.name!==name);
     local.unshift({name,file,size:blob.size,modified:(blob.lastModified||Date.now()),local:true,saved:!fresh});
     // Desktop browsers without folder linking: download right away (as before). On iPhone/iPad the
@@ -139,39 +108,6 @@ window.VideosUI = (() => {
     if(fresh && !local[0].saved) await pendingPut(name,{blob:file,modified:local[0].modified});
     return 'session';
   }
-  // Upload one queued video to Dropbox. On success it leaves the queue (it now shows from the Dropbox listing).
-  async function uploadOne(item){
-    if(item.uploading || !dbxOn()) return false;
-    item.uploading=true; item.progress=0; showProgress(item);
-    try{
-      await window.DBX.resolveRoot();
-      await window.DBX.uploadFile(C.VIDEO_DIR+'/'+item.name, item.file, {modified:item.modified, onProgress:(p)=>{ item.progress=p; showProgress(item); }});
-      await pendingDel(item.name);
-      local=local.filter(x=>x!==item);
-      return true;
-    }catch(e){ console.warn('Video upload failed; will retry', e); return false; }
-    finally{ item.uploading=false; showProgress(item); }
-  }
-  // Upload everything waiting (recordings never saved, imports made offline). Runs after each sync and when back online.
-  async function processQueue(){
-    if(!dbxOn() || queueBusy) return;
-    const todo=local.filter(x=>!x.saved);
-    if(!todo.length) return;
-    queueBusy=true;
-    let n=0;
-    try{
-      for(const item of todo){
-        if(!item.queued){ item.queued=await pendingPut(item.name,{blob:item.file,modified:item.modified,dbx:true}); }
-        if(await uploadOne(item)) n++; else break; // offline or failing: try again next time
-      }
-    }finally{ queueBusy=false; }
-    if(n){ toast(`Uploaded ${n} video${n>1?'s':''} to Dropbox`); await refresh(false); }
-  }
-  function showProgress(item){
-    const el=[...document.querySelectorAll('#vidList .vid')].find(v=>v.dataset.name===item.name);
-    const tag=el && el.querySelector('.up-state'); if(tag) tag.textContent=localTag(item);
-  }
-  const localTag=(f)=>f.uploading?`uploading ${Math.round((f.progress||0)*100)}%`:f.queued?'waiting to upload':f.saved?'this session':'not saved';
   async function importFiles(list){
     for(const f of list){
       const m=meta(); if(!m[f.name]) m[f.name]={song:$('#vidSong').value.trim(),notes:'',date:S.localDate(f.lastModified||Date.now()),reviewed:false,updatedAt:S.stamp(0)};
@@ -185,9 +121,7 @@ window.VideosUI = (() => {
   function render(){
     const m=meta();
     liveURLs.forEach(u=>URL.revokeObjectURL(u)); liveURLs.clear(); // any open player is about to be replaced
-    const seen=new Set(local.map(l=>l.name));
-    const fromFolder=files.filter(f=>!seen.has(f.name)); fromFolder.forEach(f=>seen.add(f.name));
-    shown=[...local, ...fromFolder, ...dbxFiles.filter(f=>!seen.has(f.name))].sort((a,b)=>b.modified-a.modified);
+    shown=[...local, ...files.filter(f=>!local.some(l=>l.name===f.name))].sort((a,b)=>b.modified-a.modified);
     // nudge
     const last = shown.length? shown[0].modified : (Object.values(m).map(x=>new Date(x.date).getTime()).sort((a,b)=>b-a)[0]||null);
     let nudge;
@@ -195,27 +129,19 @@ window.VideosUI = (() => {
     else { const d=daysSince(last); nudge = d===0? `🎥 Video recorded today — nice. Watch it back once with a pen: one thing that worked, one to fix.` : d<7? `🎥 Last video ${d} day${d>1?'s':''} ago. Aim for one a week; a 60-second take counts.` : `🎥 It's been <b>${d} days</b> since your last video. Progress you can't see is progress you doubt — hit record for one take of ${suggestSong()}.`; }
     const unreviewed=shown.filter(f=>m[f.name]&&!m[f.name].reviewed).length;
     if(unreviewed) nudge+=` <br>📝 ${unreviewed} video${unreviewed>1?'s':''} not yet reviewed.`;
-    const waiting=local.filter(x=>!x.saved && x.queued).length;
-    if(waiting) nudge+=` <br>☁️ ${waiting} video${waiting>1?'s':''} waiting to upload to Dropbox — ${dbxOn()?'it goes up automatically when you\'re online':'connect Dropbox (the sync button at the top) to upload'}.`;
-    const unsaved=local.filter(x=>!x.saved && !x.queued).length;
+    const unsaved=local.filter(x=>!x.saved).length;
     if(unsaved) nudge+=` <br>💾 <b>${unsaved} recording${unsaved>1?'s':''} not saved yet</b> — tap it below and hit <b>Save video</b>, or it'll be gone when you close the app.`;
     $('#vidNudge').innerHTML=nudge;
-    $('#vidCount').textContent = dbxOn()? `${dbxFiles.length} video${dbxFiles.length===1?'':'s'} in Dropbox` : files.length? `${files.length} video${files.length>1?'s':''} in folder` : (hasFS&&!dirHandle?'Folder not linked':'');
+    $('#vidCount').textContent = files.length? `${files.length} video${files.length>1?'s':''} in folder` : (hasFS&&!dirHandle?'Folder not linked':'');
     // folder / capability status
     const notes=[];
-    if(dbxOn()){
-      notes.push(`Recordings and imports upload to Dropbox → <b>${esc(C.VIDEO_DIR.split('/').slice(-2).join(' / '))}</b> ✓${dbxListError?` <span class="hint">(couldn't list the folder just now${dbxListError.kind==='network'?' — offline':''})</span>`:''}`);
-      $('#vidRefresh').classList.remove('hidden');
-    }
     if(!hasFS){
-      $('#vidPickFolder').classList.add('hidden'); if(!dbxOn()) $('#vidRefresh').classList.add('hidden');
-      if(!dbxOn()) notes.push(S.isIOS
-        ? `On iPhone/iPad the app can't link a folder. Recordings and imports stay in the list below until you close the app — open one and tap <b>Save video</b> (choose <b>Save Video</b> for Photos, or <b>Save to Files</b> → Dropbox → Practice Videos). Connect Dropbox (sync button at the top) and they upload by themselves.`
+      $('#vidPickFolder').classList.add('hidden'); $('#vidRefresh').classList.add('hidden');
+      notes.push(S.isIOS
+        ? `On iPhone/iPad the app can't link a folder. Recordings and imports stay in the list below until you close the app — open one and tap <b>Save video</b> (choose <b>Save Video</b> for Photos, or <b>Save to Files</b> → Dropbox → Practice Videos). Folder linking works in Chrome/Edge on a computer.`
         : `This browser can't link a folder (Chrome/Edge on a computer can). Recordings download automatically — drop them into your Dropbox <b>Practice Videos</b> folder. Imports are listed below for this session.`);
-    } else if(!dbxOn()){
+    } else {
       notes.push(dirHandle? (needsReconnect? `Linked to <b>${esc(dirHandle.name)}</b> — the browser needs your OK again to read it. <button type="button" class="btn small" id="vidReconnect">Reconnect folder</button>` : `Linked to <b>${esc(dirHandle.name)}</b> ✓`) : `Link your Dropbox <b>Practice Videos</b> folder to save recordings and imports straight into Dropbox (synced to your phone too).`);
-    } else if(dirHandle){
-      notes.push(`<span class="hint">Linked folder <b>${esc(dirHandle.name)}</b> is also listed${needsReconnect?' after you <button type="button" class="btn small" id="vidReconnect">Reconnect folder</button>':''}.</span>`);
     }
     if(!hasRec){
       $('#vidRecBtn').disabled=true; $('#vidRecBtn').title='Recording not supported in this browser';
@@ -226,10 +152,8 @@ window.VideosUI = (() => {
     $('#vidFolderStatus').innerHTML=notes.map(n=>`<div>${n}</div>`).join('');
     const rc=$('#vidReconnect'); if(rc) rc.addEventListener('click',()=>refresh(true));
     // list
-    if(!shown.length){ $('#vidList').innerHTML=`<p class="empty">${needsReconnect&&!dbxOn()?'Reconnect the folder to see your videos.':dbxOn()||dirHandle||!hasFS?'No videos yet.':'Link the folder to see your videos here.'}</p>`; return; }
-    $('#vidList').innerHTML=shown.map((f,i)=>{ const x=m[f.name]||{};
-      const tag=f.local?` · <span class="up-state ${f.saved||f.queued?'hint':'warn'}">${localTag(f)}</span>`:f.dbx?' · <span class="hint">Dropbox</span>':'';
-      return `<div class="vid ${x.reviewed?'reviewed':''}" data-i="${i}" data-name="${esc(f.name)}"><div class="vid-h" tabindex="0" role="button" aria-expanded="false"><span class="t">▶ ${esc(f.name)}</span><span class="hint">${new Date(f.modified).toLocaleDateString()} · ${(f.size/1048576).toFixed(1)} MB${x.song?' · '+esc(x.song):''}${tag}</span></div>${x.notes?`<div class="hint">${esc(x.notes)}</div>`:''}<div class="vid-body hidden"></div></div>`; }).join('');
+    if(!shown.length){ $('#vidList').innerHTML=`<p class="empty">${needsReconnect?'Reconnect the folder to see your videos.':dirHandle||!hasFS?'No videos yet.':'Link the folder to see your videos here.'}</p>`; return; }
+    $('#vidList').innerHTML=shown.map((f,i)=>{ const x=m[f.name]||{}; const tag=f.local?(f.saved?' · <span class="hint">this session</span>':' · <b style="color:var(--accent-text)">not saved</b>'):''; return `<div class="vid ${x.reviewed?'reviewed':''}" data-i="${i}"><div class="vid-h" tabindex="0" role="button" aria-expanded="false"><span class="t">▶ ${esc(f.name)}</span><span class="hint">${new Date(f.modified).toLocaleDateString()} · ${(f.size/1048576).toFixed(1)} MB${x.song?' · '+esc(x.song):''}${tag}</span></div>${x.notes?`<div class="hint">${esc(x.notes)}</div>`:''}<div class="vid-body hidden"></div></div>`; }).join('');
     $('#vidList').querySelectorAll('.vid').forEach(el=>el.querySelector('.vid-h').addEventListener('click',()=>openVideo(el)));
   }
   function suggestSong(){ const s=S.get().songs.filter(x=>['Learning','Polishing'].includes(x.status)); return s.length? `<i>${esc(s[Math.floor(Math.random()*s.length)].title)}</i>` : 'your current song'; }
@@ -239,50 +163,38 @@ window.VideosUI = (() => {
     const body=el.querySelector('.vid-body'); const head=el.querySelector('.vid-h');
     if(!body.classList.contains('hidden')){ const v=body.querySelector('video'); if(v&&v.src){ URL.revokeObjectURL(v.src); liveURLs.delete(v.src); } body.classList.add('hidden'); body.innerHTML=''; head.setAttribute('aria-expanded','false'); return; }
     const f=shown[+el.dataset.i]; if(!f) return;
-    let url;
-    if(f.dbx){ try{ url=await window.DBX.tempLink(f.path); }catch(e){ alert('Could not open the video from Dropbox'+(e.kind==='network'?' — you seem to be offline.':': '+e.message)); return; } }
-    else { const file=f.local? f.file : await f.handle.getFile(); url=URL.createObjectURL(file); liveURLs.add(url); }
-    head.setAttribute('aria-expanded','true');
+    const file=f.local? f.file : await f.handle.getFile(); const url=URL.createObjectURL(file); liveURLs.add(url); head.setAttribute('aria-expanded','true');
     const x=noteFor(f);
     body.classList.remove('hidden');
     const actions = f.local
-      ? (f.queued ? `<button class="btn small ghost vLog">Log as practice session</button>${dbxOn()?'<button class="btn small vUp">Upload now</button>':''}<button class="btn small ghost vDl">${S.isIOS?'Save a copy…':'Download a copy'}</button>`
-                  : `<button class="btn small vDl">${S.isIOS?'Save video…':'Download again'}</button><button class="btn small ghost vLog">Log as practice session</button><button class="btn small danger vRm">Remove from list</button>`)
-      : f.dbx ? `<button class="btn small ghost vLog">Log as practice session</button><button class="btn small danger vDbxDel">Delete from Dropbox</button>`
+      ? `<button class="btn small vDl">${S.isIOS?'Save video…':'Download again'}</button><button class="btn small ghost vLog">Log as practice session</button><button class="btn small danger vRm">Remove from list</button>`
       : `<button class="btn small ghost vLog">Log as practice session</button><button class="btn small danger vDel">Delete file</button>`;
-    body.innerHTML=`<video controls playsinline src="${esc(url)}" style="width:100%;max-height:420px;background:#000;border-radius:8px"></video>
+    body.innerHTML=`<video controls playsinline src="${url}" style="width:100%;max-height:420px;background:#000;border-radius:8px"></video>
       <div class="form"><div class="form-row"><label>Song <input type="text" class="vSong" value="${esc(x.song||'')}"></label><label class="toggle" style="align-self:end"><input type="checkbox" class="vRev" ${x.reviewed?'checked':''}> Reviewed</label></div>
       <label>Review notes (what worked / what to fix) <textarea class="vNotes" rows="2">${esc(x.notes||'')}</textarea></label>
       <div class="btn-row"><button class="btn small vSave">Save notes</button>${actions}</div></div>`;
-    body.querySelector('.vSave').addEventListener('click',()=>{ const n=noteFor(f); n.song=body.querySelector('.vSong').value.trim(); n.notes=body.querySelector('.vNotes').value.trim(); n.reviewed=body.querySelector('.vRev').checked; S.touch(n); S.save();
+    body.querySelector('.vSave').addEventListener('click',()=>{ const x=noteFor(f); x.song=body.querySelector('.vSong').value.trim(); x.notes=body.querySelector('.vNotes').value.trim(); x.reviewed=body.querySelector('.vRev').checked; S.touch(x); S.save();
       // update in place (re-rendering would close the player)
-      el.classList.toggle('reviewed',n.reviewed); const h=el.querySelector(':scope > .hint'); if(h) h.textContent=n.notes; else if(n.notes){ const d=document.createElement('div'); d.className='hint'; d.textContent=n.notes; head.after(d); }
-      toast('Notes saved'); });
-    body.querySelector('.vRev').addEventListener('change',(e)=>{ const n=noteFor(f); n.reviewed=e.target.checked; S.touch(n); S.save(); });
-    body.querySelector('.vLog').addEventListener('click',()=>{ const n=noteFor(f); $('#logSong').value=n.song||''; $('#logNotes').value='Video: '+f.name+(n.notes?'\n'+n.notes:''); $('#logDate').value=S.localDate(f.modified); $('#logForm').scrollIntoView({behavior:'smooth'}); });
-    const dl=body.querySelector('.vDl'); if(dl) dl.addEventListener('click',async()=>{ const r=await S.saveFile(f.file,f.name); if(r!=='cancelled' && !f.queued){ f.saved=true; pendingDel(f.name); render(); } });
-    const up=body.querySelector('.vUp'); if(up) up.addEventListener('click',async()=>{ up.disabled=true; if(await uploadOne(f)){ toast('Uploaded to Dropbox'); await refresh(false); } else { up.disabled=false; toast('Upload failed — it will retry automatically'); } });
+      el.classList.toggle('reviewed',x.reviewed); const n=el.querySelector(':scope > .hint'); if(n) n.textContent=x.notes; else if(x.notes){ const d=document.createElement('div'); d.className='hint'; d.textContent=x.notes; head.after(d); }
+      try{ window.App.toast('Notes saved'); }catch(e){} });
+    body.querySelector('.vRev').addEventListener('change',(e)=>{ const x=noteFor(f); x.reviewed=e.target.checked; S.touch(x); S.save(); });
+    body.querySelector('.vLog').addEventListener('click',()=>{ const x=noteFor(f); $('#logSong').value=x.song||''; $('#logNotes').value='Video: '+f.name+(x.notes?'\n'+x.notes:''); $('#logDate').value=S.localDate(f.modified); $('#logForm').scrollIntoView({behavior:'smooth'}); });
+    const dl=body.querySelector('.vDl'); if(dl) dl.addEventListener('click',async()=>{ const r=await S.saveFile(f.file,f.name); if(r!=='cancelled'){ f.saved=true; pendingDel(f.name); render(); } });
     const rm=body.querySelector('.vRm'); if(rm) rm.addEventListener('click',()=>{ if(!f.saved && !confirm('This recording hasn\'t been saved. Remove it anyway?')) return; URL.revokeObjectURL(url); liveURLs.delete(url); local=local.filter(l=>l!==f); pendingDel(f.name); render(); });
     const del=body.querySelector('.vDel'); if(del) del.addEventListener('click',async()=>{ if(!confirm('Delete '+f.name+' from the folder?')) return; await dirHandle.removeEntry(f.name); S.remove('videos', f.name); S.save(); await refresh(); });
-    const dd=body.querySelector('.vDbxDel'); if(dd) dd.addEventListener('click',async()=>{ if(!confirm('Delete '+f.name+' from Dropbox? (Dropbox keeps deleted files for a while, so it can be restored from dropbox.com.)')) return;
-      try{ await window.DBX.deleteFile(f.path); S.remove('videos', f.name); S.save(); await refresh(false); toast('Video deleted'); }catch(e){ alert('Could not delete: '+e.message); } });
   }
 
   async function init(){
     $('#vidPickFolder').addEventListener('click',pickFolder);
     $('#vidRecBtn').addEventListener('click',()=>{ if(recorder&&recorder.state==='recording') stopRec(); else startRec(); });
     $('#vidImport').addEventListener('change',(e)=>{ importFiles([...e.target.files]); e.target.value=''; });
-    $('#vidRefresh').addEventListener('click',()=>refresh());
-    // Warn before closing with recordings that exist only in memory (queued uploads are kept in IndexedDB).
-    window.addEventListener('beforeunload',(e)=>{ if(local.some(x=>!x.saved && !x.queued)){ e.preventDefault(); e.returnValue=''; } });
-    window.addEventListener('online',()=>processQueue());
+    $('#vidRefresh').addEventListener('click',refresh);
+    // Warn before closing with unsaved in-memory recordings.
+    window.addEventListener('beforeunload',(e)=>{ if(local.some(x=>!x.saved)){ e.preventDefault(); e.returnValue=''; } });
     if(hasFS){ try{ dirHandle=await kvGet('videoDir')||null; }catch(e){} }
-    // restore recordings that were never saved (app closed/killed before "Save video") or never uploaded
-    for(const [name,rec] of await pendingAll()){ if(rec && rec.blob && !local.some(l=>l.name===name)){ const b=rec.blob; local.push({name,file:b,size:b.size,modified:rec.modified||Date.now(),local:true,saved:false,queued:dbxOn()}); } }
+    // restore recordings that were never saved (app closed/killed before "Save video")
+    for(const [name,rec] of await pendingAll()){ if(rec && rec.blob && !local.some(l=>l.name===name)){ const b=rec.blob; local.push({name,file:b,size:b.size,modified:rec.modified||Date.now(),local:true,saved:false}); } }
     await refresh(false); // no permission prompt without a tap — show "Reconnect folder" instead
-    processQueue();
   }
-  // Called by the sync engine after every sync round: upload anything waiting.
-  function syncHook(){ processQueue(); }
-  return {init, refresh, syncHook, processQueue};
+  return {init, refresh};
 })();
