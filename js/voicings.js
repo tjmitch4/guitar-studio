@@ -138,33 +138,38 @@ window.Voicings = (() => {
   // marks: array of {string, fret, kind:'scale'|'root'|'sel'|'chord', label}
   function fretboardSVG(marks, opts={}){
     const nf=opts.frets||NUM_FRETS;
-    const w=opts.width||900, padL=40, padR=16, padT=18, padB=22;
-    const gw=w-padL-padR, sh=22, gh=sh*5, h=padT+gh+padB;
+    // compact: phone layout — narrower viewBox (so it fits the screen without scrolling), wider string spacing, bigger marks.
+    const C=!!opts.compact;
+    const w=opts.width||(C?480:900), padL=C?34:40, padR=C?8:16, padT=C?20:18, padB=C?24:22;
+    const gw=w-padL-padR, sh=C?44:22, gh=sh*5, h=padT+gh+padB;
+    const openW=C?padL:28, markR=C?13:9, scaleR=C?11.5:7.5, markFont=C?13:9, numFont=C?13:10, strFont=C?14:11;
     const fx=(f)=> f===0 ? padL : padL + (f-0.5)*(gw/nf); // center of fret f
     const fline=(f)=> padL + f*(gw/nf);
     const sy=(s)=> padT + (5-s)*sh; // string 0 (low E) at bottom
-    let s=`<svg viewBox="0 0 ${w} ${h}" width="100%" class="fretboard" data-nf="${nf}">`;
+    let s=`<svg viewBox="0 0 ${w} ${h}" width="100%" class="fretboard${C?' compact':''}" data-nf="${nf}">`;
     s+=`<rect x="${padL}" y="${padT-4}" width="${gw}" height="${gh+8}" fill="var(--wood)" rx="3"/>`;
     // fret markers
-    [3,5,7,9,15].forEach(f=>{ if(f<=nf) s+=`<circle cx="${fx(f)}" cy="${padT+gh/2}" r="4" fill="var(--inlay)"/>`; });
-    if(nf>=12){ s+=`<circle cx="${fx(12)}" cy="${padT+sh*1.5}" r="4" fill="var(--inlay)"/><circle cx="${fx(12)}" cy="${padT+sh*3.5}" r="4" fill="var(--inlay)"/>`; }
+    const inR=C?6:4;
+    [3,5,7,9,15].forEach(f=>{ if(f<=nf) s+=`<circle cx="${fx(f)}" cy="${padT+gh/2}" r="${inR}" fill="var(--inlay)"/>`; });
+    if(nf>=12){ s+=`<circle cx="${fx(12)}" cy="${padT+sh*1.5}" r="${inR}" fill="var(--inlay)"/><circle cx="${fx(12)}" cy="${padT+sh*3.5}" r="${inR}" fill="var(--inlay)"/>`; }
     for(let f=0;f<=nf;f++){ s+=`<line x1="${fline(f)}" y1="${padT-4}" x2="${fline(f)}" y2="${padT+gh+4}" stroke="${f===0?'var(--nut)':'var(--fretwire)'}" stroke-width="${f===0?5:2}"/>`;
-      if(f>0) s+=`<text x="${fx(f)}" y="${h-6}" font-size="10" text-anchor="middle" fill="currentColor" opacity=".6">${f}</text>`; }
+      if(f>0) s+=`<text x="${fx(f)}" y="${h-6}" font-size="${numFont}" text-anchor="middle" fill="currentColor" opacity=".7">${f}</text>`; }
     for(let st=0;st<6;st++){ s+=`<line x1="${padL}" y1="${sy(st)}" x2="${padL+gw}" y2="${sy(st)}" stroke="var(--string)" stroke-width="${2.6-st*0.3}"/>`;
-      s+=`<text x="${padL-10}" y="${sy(st)+4}" font-size="11" text-anchor="end" fill="currentColor" opacity=".7">${M.STRING_NAMES[st]}</text>`; }
+      s+=`<text x="${padL-10}" y="${sy(st)+4}" font-size="${strFont}" text-anchor="end" fill="currentColor" opacity=".75">${M.STRING_NAMES[st]}</text>`; }
     // clickable hit areas
     for(let st=0;st<6;st++) for(let f=0;f<=nf;f++){
-      const x = f===0? padL-28 : fline(f-1), wdt = f===0? 28 : gw/nf;
+      const x = f===0? padL-openW : fline(f-1), wdt = f===0? openW : gw/nf;
       s+=`<rect class="hit" data-s="${st}" data-f="${f}" x="${x}" y="${sy(st)-sh/2}" width="${wdt}" height="${sh}" fill="transparent" style="cursor:pointer"/>`;
     }
     for(const m of marks){
-      const cx = m.fret===0 ? padL-14 : fx(m.fret), cy=sy(m.string);
-      const r = m.kind==='scale'||m.kind==='dim' ? 7.5 : 9;
-      const FILL={root:'var(--accent)',sel:'var(--sel)',chord:'var(--dot)',scale:'var(--scale)',ok:'var(--ok)',bad:'var(--danger)',ask:'var(--sel)',dim:'var(--scale)'};
-      const fill = FILL[m.kind]||'var(--scale)';
+      const cx = m.fret===0 ? padL-openW/2 : fx(m.fret), cy=sy(m.string);
+      const r = m.kind==='scale'||m.kind==='dim' ? scaleR : markR;
+      // fretboard colours are fixed (the neck is always dark wood), so they don't flip with light/dark mode
+      const FILL={root:'var(--accent)',sel:'var(--fb-sel)',chord:'var(--fb-dot)',scale:'var(--fb-scale)',ok:'var(--ok)',bad:'var(--fb-bad)',ask:'var(--fb-sel)',dim:'var(--fb-scale)'};
+      const fill = FILL[m.kind]||'var(--fb-scale)';
       const op = m.kind==='scale'?0.85: m.kind==='dim'?0.35:1;
-      s+=`<g pointer-events="none"><circle cx="${cx}" cy="${cy}" r="${r}" fill="${fill}" opacity="${op}" stroke="var(--bg)" stroke-width="1"/>`;
-      if(m.label!=null) s+=`<text x="${cx}" y="${cy+3.5}" font-size="9" font-weight="700" text-anchor="middle" fill="var(--bg)">${m.label}</text>`;
+      s+=`<g pointer-events="none"><circle cx="${cx}" cy="${cy}" r="${r}" fill="${fill}" opacity="${op}" stroke="var(--wood)" stroke-width="1"/>`;
+      if(m.label!=null) s+=`<text x="${cx}" y="${cy+markFont*0.38}" font-size="${markFont}" font-weight="700" text-anchor="middle" fill="var(--mark-text)">${m.label}</text>`;
       s+='</g>';
     }
     s+='</svg>';

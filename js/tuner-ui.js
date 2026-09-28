@@ -65,9 +65,9 @@ window.TunerUI = (() => {
     src.connect(hp).connect(analyser); buf=new Float32Array(analyser.fftSize);
     running=true; $('#tnToggle').textContent='■ Stop tuner'; $('#tnToggle').classList.add('danger'); loop();
   }
-  function stop(){ running=false; cancelAnimationFrame(raf); if(stream) stream.getTracks().forEach(t=>t.stop()); stream=null; window.Tone.audioSession('playback'); $('#tnToggle').textContent='🎤 Start tuner'; $('#tnToggle').classList.remove('danger'); showIdle(); }
+  function stop(){ if(!running) return; running=false; cancelAnimationFrame(raf); if(stream) stream.getTracks().forEach(t=>t.stop()); stream=null; window.Tone.audioSession('playback'); $('#tnToggle').textContent='🎤 Start tuner'; $('#tnToggle').classList.remove('danger'); showIdle(); }
   function init(){
-    $('#tnStrings').innerHTML=STRINGS.map(s=>`<span class="chip" data-m="${s.m}" title="Play reference">${s.n.replace(/\d/,'')}<small>${s.n.slice(-1)}</small></span>`).join('');
+    $('#tnStrings').innerHTML=STRINGS.map(s=>`<button type="button" class="chip" data-m="${s.m}" title="Play reference" aria-label="Play ${s.n} reference">${s.n.replace(/\d/,'')}<small>${s.n.slice(-1)}</small></button>`).join('');
     $('#tnStrings').querySelectorAll('.chip').forEach(ch=>ch.addEventListener('click',()=>window.Tone.pluck(+ch.dataset.m,0,0.9)));
     $('#tnToggle').addEventListener('click',()=>running?stop():start());
     $('#tnA4').addEventListener('change',()=>{ a4=+$('#tnA4').value||440; });

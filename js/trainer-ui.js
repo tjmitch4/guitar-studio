@@ -18,7 +18,10 @@ window.TrainerUI = (() => {
   const state={ mode:'find', strings:new Set([0,1]), naturals:true, maxFret:12, timed:false, level:null,
     q:null, qStart:0, lock:false, learnPc:null, learnString:null, streak:0, sessionN:0, sessionOK:0 };
 
-  const stats=()=>{ const d=S.get(); if(!d.quiz) d.quiz={attempts:[]}; return d.quiz; };
+  const stats=()=>{ const d=S.get(); if(!d.quiz||!Array.isArray(d.quiz.attempts)) d.quiz={attempts:[]}; return d.quiz; };
+  // Phones: a taller, full-width neck with bigger tap targets instead of a 700px board you have to scroll.
+  const narrowMQ=window.matchMedia('(max-width: 560px)');
+  const isCompact=()=>narrowMQ.matches;
 
   // ---------- Question generation (weighted toward weak spots) ----------
   function candidates(){
@@ -61,13 +64,14 @@ window.TrainerUI = (() => {
     return marks;
   }
   function render(){
-    $('#trFretboard').innerHTML=V.fretboardSVG(marksFor(),{frets:state.maxFret>12?15:12});
+    $('#tab-trainer').classList.toggle('learn', state.mode==='learn');
+    $('#trFretboard').innerHTML=V.fretboardSVG(marksFor(),{frets:state.maxFret>12?15:12, compact:isCompact()});
     // dim strings not in play
     if(state.mode!=='learn'){ const svg=$('#trFretboard svg'); if(svg){ for(let s=0;s<6;s++){ if(!state.strings.has(s)){ svg.querySelectorAll(`.hit[data-s="${s}"]`).forEach(h=>h.style.cursor='not-allowed'); } } } }
     const nm=(pc)=>M.pcToName(pc,uf());
     if(state.mode==='learn'){
       $('#trPrompt').innerHTML= state.learnString!=null ? `<b>Notes on the ${STR[state.learnString]} string</b> — bold = naturals. Click any fret to hear it.` : state.learnPc!=null ? `<b>Every ${nm(state.learnPc)}</b> on the neck. Notice the octave shapes: 2 strings up + 2 frets (E→D, A→G), 2 strings up + 3 frets (D→B, G→e), and same fret on E and e.` : 'Pick a note or a string below.';
-      $('#trAnswers').innerHTML=`<div class="chips">${M.SHARP.map((n,i)=>`<span class="chip ${state.learnPc===i?'on':''}" data-pc="${i}">${nm(i)}</span>`).join('')}</div><div class="chips" style="margin-top:.4rem">${STR.map((n,i)=>`<span class="chip ${state.learnString===i?'on':''}" data-str="${i}">${n}</span>`).join('')}</div>`;
+      $('#trAnswers').innerHTML=`<div class="chips" role="group" aria-label="Show every"><span class="chips-label">Every:</span>${M.SHARP.map((n,i)=>`<button type="button" class="chip ${state.learnPc===i?'on':''}" aria-pressed="${state.learnPc===i}" data-pc="${i}">${nm(i)}</button>`).join('')}</div><div class="chips" style="margin-top:.4rem" role="group" aria-label="Show string"><span class="chips-label">String:</span>${STR.map((n,i)=>`<button type="button" class="chip ${state.learnString===i?'on':''}" aria-pressed="${state.learnString===i}" data-str="${i}">${n}</button>`).join('')}</div>`;
       $('#trAnswers').querySelectorAll('[data-pc]').forEach(c=>c.addEventListener('click',()=>{ state.learnPc=+c.dataset.pc; state.learnString=null; render(); const m=M.TUNING[0]+((state.learnPc-M.TUNING[0])%12+12)%12; T.pluck(m); }));
       $('#trAnswers').querySelectorAll('[data-str]').forEach(c=>c.addEventListener('click',()=>{ state.learnString=+c.dataset.str; state.learnPc=null; render(); }));
     } else if(state.q){
@@ -77,12 +81,12 @@ window.TrainerUI = (() => {
       } else {
         $('#trPrompt').innerHTML=`What note is the <b>blue dot</b>? (${STR[state.q.s]} string, fret ${state.q.f})`;
         const opts = state.naturals? NAT : [...Array(12).keys()];
-        $('#trAnswers').innerHTML=`<div class="chips big">${opts.map(pc=>`<span class="chip" data-ans="${pc}">${nm(pc)}</span>`).join('')}</div><span class="hint">Keyboard: A–G for naturals · Shift+letter = sharp · letter then <kbd>-</kbd> = flat.</span>`;
+        $('#trAnswers').innerHTML=`<div class="chips big">${opts.map(pc=>`<button type="button" class="chip" data-ans="${pc}">${nm(pc)}</button>`).join('')}</div><span class="hint">Keyboard: A–G for naturals · Shift+letter = sharp · letter then <kbd>-</kbd> = flat.</span>`;
         $('#trAnswers').querySelectorAll('[data-ans]').forEach(c=>c.addEventListener('click',()=>answerName(+c.dataset.ans)));
       }
     }
     $('#trSession').innerHTML=`Session: <b>${state.sessionOK}/${state.sessionN}</b> · streak <b>${state.streak}</b>${state.level?` · Level ${state.level.id}: ${state.level.name}`:''}`;
-    renderLevels(); renderHeat();
+    renderLevels(); renderHeat(perStats());
   }
 
   // ---------- Answering ----------
@@ -138,7 +142,7 @@ window.TrainerUI = (() => {
   }
   function renderLevels(){
     $('#trLevels').innerHTML=LEVELS.map(L=>{ const p=levelProgress(L); const cur=state.level&&state.level.id===L.id;
-      return `<div class="lvl ${p.passed?'passed':''} ${cur?'cur':''}" data-l="${L.id}"><div class="lvl-h"><span>${p.passed?'✅':cur?'▶':'○'} L${L.id} · ${L.name}</span><span class="lvl-p">${p.n?`${Math.round(p.acc*100)}% · ${(p.avg/1000).toFixed(1)}s (${p.n}/20)`:'not started'}</span></div></div>`; }).join('');
+      return `<button type="button" class="lvl ${p.passed?'passed':''} ${cur?'cur':''}" data-l="${L.id}" ${cur?'aria-current="true"':''}><span class="lvl-h"><span>${p.passed?'✅':cur?'▶':'○'} L${L.id} · ${L.name}</span><span class="lvl-p">${p.n?`${Math.round(p.acc*100)}% · ${(p.avg/1000).toFixed(1)}s (${p.n}/20)`:'not started'}</span></span></button>`; }).join('');
     $('#trLevels').querySelectorAll('.lvl').forEach(el=>el.addEventListener('click',()=>startLevel(+el.dataset.l)));
     const next=LEVELS.find(L=>!levelProgress(L).passed);
     $('#trNext').textContent= next? `Suggested: L${next.id} · ${next.name}` : 'All levels passed — do timed whole-neck rounds to keep it sharp!';
@@ -148,8 +152,8 @@ window.TrainerUI = (() => {
     if(state.mode==='learn') state.mode='find';
     syncControls(); $('#trTip').textContent=L.tip; nextQuestion();
   }
-  function renderHeat(){
-    const per=perStats(); const nm=(pc)=>M.pcToName(pc,uf());
+  function renderHeat(per){
+    per=per||perStats(); const nm=(pc)=>M.pcToName(pc,uf());
     let h=`<table class="heat"><tr><th></th>${M.SHARP.map((n,i)=>`<th>${nm(i)}</th>`).join('')}</tr>`;
     for(let s=5;s>=0;s--){ h+=`<tr><th>${M.STRING_NAMES[s]}</th>`; for(let pc=0;pc<12;pc++){ const st=per[s+':'+pc]; let bg='transparent',txt='·',title='not practiced'; if(st){ const acc=st.ok/st.n; const hue=Math.round(acc*120); bg=`hsla(${hue},60%,45%,${0.35+0.5*Math.min(1,st.n/8)})`; txt=Math.round(acc*100)+''; title=`${st.ok}/${st.n} correct · avg ${(st.avg/1000).toFixed(1)}s`; } h+=`<td style="background:${bg}" title="${title}">${txt}</td>`; } h+='</tr>'; }
     h+='</table>';
@@ -159,18 +163,19 @@ window.TrainerUI = (() => {
 
   function syncControls(){
     $('#trMode').value=state.mode; $('#trNaturals').checked=state.naturals; $('#trFrets').value=state.maxFret;
-    $('#trStrings').querySelectorAll('.chip').forEach(c=>c.classList.toggle('on',state.strings.has(+c.dataset.s)));
+    $('#trStrings').querySelectorAll('.chip').forEach(c=>{ const on=state.strings.has(+c.dataset.s); c.classList.toggle('on',on); c.setAttribute('aria-pressed',on); });
   }
   function init(){
-    $('#trStrings').innerHTML=STR.map((n,i)=>`<span class="chip" data-s="${i}">${n}</span>`).join('');
+    $('#trStrings').innerHTML='<span class="chips-label">Quiz strings:</span>'+STR.map((n,i)=>`<button type="button" class="chip" aria-pressed="false" data-s="${i}">${n}</button>`).join('');
     $('#trStrings').querySelectorAll('.chip').forEach(c=>c.addEventListener('click',()=>{ const s=+c.dataset.s; state.strings.has(s)?state.strings.delete(s):state.strings.add(s); state.level=null; syncControls(); nextQuestion(); }));
     $('#trMode').addEventListener('change',()=>{ state.mode=$('#trMode').value; state.fb=null; if(state.mode==='learn'){ state.q=null; render(); } else nextQuestion(); });
     $('#trNaturals').addEventListener('change',()=>{ state.naturals=$('#trNaturals').checked; state.level=null; nextQuestion(); });
     $('#trFrets').addEventListener('change',()=>{ state.maxFret=+$('#trFrets').value; state.level=null; nextQuestion(); });
     $('#trSkip').addEventListener('click',()=>{ state.fb=null; nextQuestion(); });
-    $('#trReset').addEventListener('click',()=>{ if(!confirm('Reset all trainer stats?')) return; S.get().quiz={attempts:[]}; S.save(); render(); });
+    $('#trReset').addEventListener('click',()=>{ if(!confirm('Reset all trainer stats?')) return; S.get().quiz={attempts:[]}; S.save(); render(); window.App.toast('Trainer stats reset'); });
     $('#trFretboard').addEventListener('click',(e)=>{ const t=e.target.closest('.hit'); if(t) onFretClick(+t.dataset.s,+t.dataset.f); });
     document.addEventListener('keydown',onKey);
+    const onMQ=()=>render(); if(narrowMQ.addEventListener) narrowMQ.addEventListener('change',onMQ); else if(narrowMQ.addListener) narrowMQ.addListener(onMQ);
     $('#useFlats').addEventListener('change',render);
     // start at suggested level
     const next=LEVELS.find(L=>!levelProgress(L).passed)||LEVELS[6];

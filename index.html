@@ -19,24 +19,25 @@
 <body>
 <header class="topbar">
   <div class="brand">🎸 Guitar Studio</div>
-  <nav class="tabs">
-    <button data-tab="trainer" class="active">Note Trainer</button>
-    <button data-tab="fretboard">Fretboard &amp; Chords</button>
-    <button data-tab="theory">Theory</button>
-    <button data-tab="practice">Practice</button>
-    <button data-tab="songs">Songs</button>
+  <nav class="tabs" role="tablist" aria-label="Sections">
+    <button type="button" role="tab" id="tabbtn-trainer" aria-controls="tab-trainer" data-tab="trainer" class="active">Note Trainer</button>
+    <button type="button" role="tab" id="tabbtn-fretboard" aria-controls="tab-fretboard" data-tab="fretboard">Fretboard &amp; Chords</button>
+    <button type="button" role="tab" id="tabbtn-theory" aria-controls="tab-theory" data-tab="theory">Theory</button>
+    <button type="button" role="tab" id="tabbtn-practice" aria-controls="tab-practice" data-tab="practice">Practice</button>
+    <button type="button" role="tab" id="tabbtn-songs" aria-controls="tab-songs" data-tab="songs">Songs</button>
   </nav>
   <div class="topbar-right">
-    <label class="toggle"><input type="checkbox" id="soundOn" checked> 🔊</label>
+    <label class="toggle" title="Sound on/off"><input type="checkbox" id="soundOn" checked aria-label="Sound"> 🔊</label>
     <select id="tonePreset" title="Guitar tone"></select>
     <button class="btn small ghost" id="toneTest" title="Play a test chord">▶</button>
-    <label class="toggle"><input type="checkbox" id="useFlats"> ♭ names</label>
+    <label class="toggle" title="Use flat note names"><input type="checkbox" id="useFlats"> ♭<span class="lbl-long"> names</span></label>
   </div>
 </header>
 
+<div id="dataBanner" class="data-banner hidden" role="alert"></div>
 <main>
   <!-- ================= NOTE TRAINER ================= -->
-  <section id="tab-trainer" class="tab active">
+  <section id="tab-trainer" class="tab active" role="tabpanel" aria-labelledby="tabbtn-trainer">
     <div class="panel">
       <div class="panel-head">
         <h2>Fretboard note trainer</h2>
@@ -48,12 +49,12 @@
               <option value="learn">Learn / explore</option>
             </select>
           </label>
-          <label class="toggle"><input type="checkbox" id="trNaturals" checked> Naturals only</label>
+          <label class="toggle tr-naturals"><input type="checkbox" id="trNaturals" checked> Naturals only</label>
           <label>Frets <select id="trFrets"><option value="12">0–12</option><option value="15">0–15</option></select></label>
           <button class="btn small ghost" id="trSkip">Skip</button>
         </div>
       </div>
-      <div class="chips" id="trStrings"></div>
+      <div class="chips" id="trStrings" role="group" aria-label="Quiz strings"><span class="chips-label">Quiz strings:</span></div>
       <div class="tr-prompt" id="trPrompt"></div>
       <div id="trFretboard" class="fretboard-host"></div>
       <div id="trAnswers" class="tr-answers"></div>
@@ -74,7 +75,7 @@
   </section>
 
   <!-- ================= FRETBOARD & CHORDS ================= -->
-  <section id="tab-fretboard" class="tab">
+  <section id="tab-fretboard" class="tab" role="tabpanel" aria-labelledby="tabbtn-fretboard">
     <div class="panel">
       <div class="panel-head">
         <h2>Fretboard</h2>
@@ -161,7 +162,7 @@
   </section>
 
   <!-- ================= THEORY ================= -->
-  <section id="tab-theory" class="tab">
+  <section id="tab-theory" class="tab" role="tabpanel" aria-labelledby="tabbtn-theory">
     <div class="two-col">
       <div class="panel">
         <h2>Circle of fifths</h2>
@@ -199,11 +200,11 @@
     <div class="two-col">
       <div class="panel">
         <h2>Intervals</h2>
-        <table class="ref-table" id="intervalsTable"></table>
+        <div class="table-scroll"><table class="ref-table" id="intervalsTable"></table></div>
       </div>
       <div class="panel">
         <h2>Chord formulas</h2>
-        <table class="ref-table" id="chordFormulaTable"></table>
+        <div class="table-scroll"><table class="ref-table" id="chordFormulaTable"></table></div>
       </div>
     </div>
 
@@ -214,7 +215,7 @@
   </section>
 
   <!-- ================= PRACTICE ================= -->
-  <section id="tab-practice" class="tab">
+  <section id="tab-practice" class="tab" role="tabpanel" aria-labelledby="tabbtn-practice">
     <div class="three-col">
       <div class="panel">
         <h2>Timer &amp; metronome</h2>
@@ -228,10 +229,10 @@
         <div class="metro">
           <div class="metro-row">
             <button class="btn" id="metroToggle">▶ Metronome</button>
-            <input type="number" id="metroBpm" min="30" max="260" value="90"> <span>bpm</span>
+            <input type="number" id="metroBpm" min="30" max="260" value="90" aria-label="Tempo in bpm"> <span id="metroUnit">bpm</span>
             <select id="metroSig"><option value="4">4/4</option><option value="3">3/4</option><option value="6">6/8</option><option value="0">no accent</option></select>
           </div>
-          <input type="range" id="metroSlider" min="30" max="260" value="90">
+          <input type="range" id="metroSlider" min="30" max="260" value="90" aria-label="Tempo">
           <div class="metro-beats" id="metroBeats"></div>
         </div>
         <div class="tuner">
@@ -259,7 +260,7 @@
             <label>Date <input type="date" id="logDate" required></label>
             <label>Minutes <input type="number" id="logMinutes" min="1" max="600" required></label>
           </div>
-          <label>Focus areas <div class="chips" id="logCats"></div></label>
+          <div class="field" id="logCatsLabel">Focus areas <div class="chips" id="logCats" role="group" aria-label="Focus areas"></div></div>
           <label>Song / material <input type="text" id="logSong" list="songList" placeholder="e.g. Slow Dancing in a Burning Room"></label>
           <datalist id="songList"></datalist>
           <div class="form-row">
@@ -267,7 +268,7 @@
             <label>Feel <select id="logRating"><option value="">—</option><option>😩 rough</option><option>😐 ok</option><option>🙂 good</option><option>🔥 great</option></select></label>
           </div>
           <label>Notes <textarea id="logNotes" rows="2" placeholder="What did you work on? What clicked? What to hit next time?"></textarea></label>
-          <button class="btn" type="submit">Save session</button>
+          <div class="btn-row"><button class="btn" type="submit" id="logSubmit">Save session</button><button class="btn ghost hidden" type="button" id="logCancelEdit">Cancel edit</button></div>
         </form>
       </div>
 
@@ -329,7 +330,7 @@
   </section>
 
   <!-- ================= SONGS ================= -->
-  <section id="tab-songs" class="tab">
+  <section id="tab-songs" class="tab" role="tabpanel" aria-labelledby="tabbtn-songs">
     <div class="panel">
       <div class="panel-head">
         <h2>Repertoire</h2>
@@ -345,9 +346,12 @@
   </section>
 </main>
 
+<div id="toast" class="toast" role="status" aria-live="polite"></div>
+
 <dialog id="songDialog">
   <form method="dialog" id="songForm" class="form">
     <h3 id="songDialogTitle">Add song</h3>
+    <div id="songHistory" class="song-history hidden"></div>
     <label>Title <input type="text" id="sTitle" required></label>
     <label>Artist <input type="text" id="sArtist"></label>
     <div class="form-row">
