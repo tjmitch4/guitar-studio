@@ -1,0 +1,16 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Guitar Studio (mock Dropbox)</title>
+<!-- The real app (index.html) with a fake Dropbox and a fake app key, for manual/automated testing.
+     Uses its own storage keys (gsMock.*) so it never touches real data. DropboxMock state persists across reloads.
+     Controls from the console: DropboxMock.set({offline:true}), DropboxMock.put(path, text), DropboxMock.reset(). -->
+<script src="dropbox-mock.js"></script>
+<script>
+  DropboxMock.install({persistState:true});
+  DropboxMock.addFolder('/TJ/Guitar');
+  window.GS_CONFIG_OVERRIDE={DROPBOX_APP_KEY:'test-app-key', STORE_KEY:'gsMock.v1', DROPBOX_KEY:'gsMock.dropbox'};
+  fetch('../index.html',{cache:'no-store'}).then(r=>r.text()).then(html=>{
+    html=html.replace('<head>','<head><base href="../">');
+    document.open(); document.write(html); document.close();
+  });
+</script>

@@ -57,11 +57,11 @@ window.PracticeUI = (() => {
     const d=S.get();
     const fields={date:$('#logDate').value, minutes:+$('#logMinutes').value, cats:[...selectedCats], song:$('#logSong').value.trim(), tempo:$('#logTempo').value?+$('#logTempo').value:null, rating:$('#logRating').value, notes:$('#logNotes').value.trim()};
     const existing = editingId && d.sessions.find(s=>s.id===editingId);
-    if(existing) Object.assign(existing, fields);
-    else d.sessions.push(Object.assign({id:S.uid()}, fields, {created:new Date().toISOString()}));
+    if(existing){ Object.assign(existing, fields); S.touch(existing); }
+    else d.sessions.push(Object.assign({id:S.uid()}, fields, {created:new Date().toISOString(), updatedAt:S.stamp(0)}));
     // if the song is in the repertoire and a tempo was logged, update its current tempo
     const song=fields.song && d.songs.find(s=>(s.title||'').toLowerCase()===fields.song.toLowerCase());
-    if(song && fields.tempo){ song.curTempo=fields.tempo; song.updated=Date.now(); }
+    if(song && fields.tempo && song.curTempo!==fields.tempo){ song.curTempo=fields.tempo; song.updated=Date.now(); S.touch(song); }
     const ok=S.save();
     const wasEdit=!!existing;
     resetForm({resetTimer:!wasEdit});
@@ -136,7 +136,7 @@ window.PracticeUI = (() => {
     if(!ss.length){ $('#historyHost').innerHTML='<p class="empty">No sessions yet — log your first one above.</p>'; return; }
     $('#historyHost').innerHTML=`<div class="table-scroll"><table class="hist"><thead><tr><th>Date</th><th>Min</th><th>Focus</th><th>Song</th><th class="c-tempo">Tempo</th><th class="c-feel">Feel</th><th>Notes</th><th><span class="vh">Actions</span></th></tr></thead><tbody>${ss.map(s=>`<tr><td class="nowrap">${esc(s.date)}</td><td>${esc(s.minutes)}</td><td>${esc((s.cats||[]).join(', '))}</td><td>${esc(s.song||'')}</td><td class="c-tempo">${esc(s.tempo||'')}</td><td class="c-feel">${esc(s.rating||'')}</td><td class="notes">${esc(s.notes||'')}</td><td class="acts"><button type="button" class="icon-btn edit" data-id="${esc(s.id)}" aria-label="Edit session from ${esc(s.date)}" title="Edit">✎</button><button type="button" class="icon-btn del" data-id="${esc(s.id)}" aria-label="Delete session from ${esc(s.date)}" title="Delete">✕</button></td></tr>`).join('')}</tbody></table></div>`;
     $('#historyHost').querySelectorAll('.edit').forEach(b=>b.addEventListener('click',()=>startEdit(b.dataset.id)));
-    $('#historyHost').querySelectorAll('.del').forEach(b=>b.addEventListener('click',()=>{ if(!confirm('Delete this session?')) return; const d=S.get(); d.sessions=d.sessions.filter(x=>x.id!==b.dataset.id); if(editingId===b.dataset.id) cancelEdit(); S.save(); renderProgress(); renderHistory(); window.SongsUI && window.SongsUI.render(); toast('Session deleted'); }));
+    $('#historyHost').querySelectorAll('.del').forEach(b=>b.addEventListener('click',()=>{ if(!confirm('Delete this session?')) return; S.remove('sessions', b.dataset.id); if(editingId===b.dataset.id) cancelEdit(); S.save(); renderProgress(); renderHistory(); window.SongsUI && window.SongsUI.render(); toast('Session deleted'); }));
   }
 
   function init(){
@@ -150,19 +150,24 @@ window.PracticeUI = (() => {
     $('#logCancelEdit').addEventListener('click',()=>cancelEdit());
     $('#planRegen').addEventListener('click',generatePlan);
     $('#exportBtn').addEventListener('click',async()=>{ const r=await S.exportJSON(); if(r!=='cancelled') toast('Backup exported'); });
-    $('#importFile').addEventListener('change',(e)=>{ const f=e.target.files[0]; if(!f) return; S.importJSON(f,(err,c)=>{
-      e.target.value='';
-      if(err){ alert('Import failed: '+err.message); return; }
-      document.getElementById('dataBanner').classList.add('hidden');
-      renderProgress(); renderHistory(); renderSongList(); window.SongsUI.render(); try{ window.TrainerUI.render(); }catch(x){} try{ window.VideosUI.refresh(false); }catch(x){}
-      const parts=[]; if(c.sessions) parts.push(`${c.sessions} session${c.sessions>1?'s':''}`); if(c.songsAdded) parts.push(`${c.songsAdded} song${c.songsAdded>1?'s':''}`); if(c.attempts) parts.push(`${c.attempts} trainer answers`); if(c.videos) parts.push(`${c.videos} video note${c.videos>1?'s':''}`);
-      const msg=(parts.length?'Imported '+parts.join(', '):'Nothing new to import')+(c.songsUpdated?` · updated ${c.songsUpdated} song${c.songsUpdated>1?'s':''}`:'');
-      window.App.toast(msg,{ms:4000});
-    }); });
+    $('#importFile').addEventListener('change',(e)=>{ const f=e.target.files[0]; e.target.value=''; if(f) importFile(f); });
     document.addEventListener('keydown',(e)=>{ if(e.code==='Space' && document.activeElement===document.body && $('#tab-practice').classList.contains('active')){ e.preventDefault(); metroToggle(); } });
     // the metronome has its own AudioContext; wake it when the app comes back (iOS suspends it)
     document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='visible' && ac && mRunning){ try{ ac.resume(); }catch(e){} } });
     generatePlan(); renderProgress(); renderHistory();
   }
-  return {init, renderSongList, generatePlan};
+  // Import a backup JSON (from the Session history panel or the sync panel's backup tools).
+  function importFile(f){
+    S.importJSON(f,(err,c)=>{
+      if(err){ alert('Import failed: '+err.message); return; }
+      document.getElementById('dataBanner').classList.add('hidden');
+      window.App.refreshData();
+      const parts=[]; if(c.sessions) parts.push(`${c.sessions} session${c.sessions>1?'s':''}`); if(c.songsAdded) parts.push(`${c.songsAdded} song${c.songsAdded>1?'s':''}`); if(c.attempts) parts.push(`${c.attempts} trainer answers`); if(c.videos) parts.push(`${c.videos} video note${c.videos>1?'s':''}`);
+      const msg=(parts.length?'Imported '+parts.join(', '):'Nothing new to import')+(c.songsUpdated?` · updated ${c.songsUpdated} song${c.songsUpdated>1?'s':''}`:'');
+      window.App.toast(msg,{ms:4000});
+    });
+  }
+  // Re-render after data changed underneath (sync / import).
+  function refresh(){ renderProgress(); renderHistory(); renderSongList(); }
+  return {init, renderSongList, generatePlan, importFile, refresh};
 })();

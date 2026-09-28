@@ -59,12 +59,12 @@ window.SongsUI = (() => {
     const obj={title:$('#sTitle').value.trim(), artist:$('#sArtist').value.trim(), status:$('#sStatus').value, key:$('#sKey').value.trim(), tuning:$('#sTuning').value.trim(), tempo:$('#sTempo').value?+$('#sTempo').value:'', curTempo:$('#sCurTempo').value?+$('#sCurTempo').value:'', sections:$('#sSections').value.trim(), notes:$('#sNotes').value.trim(), links:$('#sLinks').value.trim(), updated:Date.now()};
     if(!obj.title) return;
     const cur=editing && d.songs.find(x=>x.id===editing);
-    if(cur){ Object.assign(cur,obj); }
-    else d.songs.push(Object.assign({id:S.uid(),added:S.localDate()},obj));
+    if(cur){ Object.assign(cur,obj); S.touch(cur); }
+    else d.songs.push(Object.assign({id:S.uid(),added:S.localDate()},obj,{updatedAt:S.stamp(0)}));
     const ok=S.save(); $('#songDialog').close(); render(); window.PracticeUI.generatePlan();
     if(ok!==false) window.App.toast(cur?'Song saved':'Song added');
   }
-  function del(){ if(!editing||!confirm('Delete this song?')) return; const d=S.get(); d.songs=d.songs.filter(x=>x.id!==editing); S.save(); $('#songDialog').close(); render(); window.App.toast('Song deleted'); }
+  function del(){ if(!editing||!confirm('Delete this song?')) return; S.remove('songs', editing); S.save(); $('#songDialog').close(); render(); window.App.toast('Song deleted'); }
 
   const RESOURCES=[
     {t:'Elevated Jam Tracks (YouTube)', b:'Your Dropbox Guitar folder already has EJT downloads (Deep Highway A minor, Tense Blues Rock D minor, Hot Driving Rock E, Mysterious Bluesy F minor). Match them to scales: A minor → A minor pent / A Dorian; D minor blues-rock → D minor pent + D blues; E rock → E minor pent / E Mixolydian; F minor → F minor pent / F Aeolian.'},

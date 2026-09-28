@@ -91,7 +91,8 @@ window.TrainerUI = (() => {
 
   // ---------- Answering ----------
   function record(ok, ms){
-    const q=state.q; const st=stats(); st.attempts.push({s:q.s,f:q.f,pc:q.pc,ok,ms:Math.round(ms),mode:state.mode,lvl:state.level?state.level.id:0,ts:Date.now()});
+    const q=state.q; const st=stats(); const a={s:q.s,f:q.f,pc:q.pc,ok,ms:Math.round(ms),mode:state.mode,lvl:state.level?state.level.id:0,ts:Date.now()};
+    a.id=window.SyncMerge.attemptId(a); st.attempts.push(a); // append-only; merged across devices by id
     if(st.attempts.length>4000) st.attempts=st.attempts.slice(-4000);
     S.save(); state.sessionN++; if(ok){ state.sessionOK++; state.streak++; } else state.streak=0;
   }
@@ -172,7 +173,7 @@ window.TrainerUI = (() => {
     $('#trNaturals').addEventListener('change',()=>{ state.naturals=$('#trNaturals').checked; state.level=null; nextQuestion(); });
     $('#trFrets').addEventListener('change',()=>{ state.maxFret=+$('#trFrets').value; state.level=null; nextQuestion(); });
     $('#trSkip').addEventListener('click',()=>{ state.fb=null; nextQuestion(); });
-    $('#trReset').addEventListener('click',()=>{ if(!confirm('Reset all trainer stats?')) return; S.get().quiz={attempts:[]}; S.save(); render(); window.App.toast('Trainer stats reset'); });
+    $('#trReset').addEventListener('click',()=>{ if(!confirm('Reset all trainer stats?')) return; const q=stats(); S.get().quiz={attempts:[], resetAt:S.stamp(q.resetAt)}; S.save(); /* resetAt hides older answers on every synced device */ render(); window.App.toast('Trainer stats reset'); });
     $('#trFretboard').addEventListener('click',(e)=>{ const t=e.target.closest('.hit'); if(t) onFretClick(+t.dataset.s,+t.dataset.f); });
     document.addEventListener('keydown',onKey);
     const onMQ=()=>render(); if(narrowMQ.addEventListener) narrowMQ.addEventListener('change',onMQ); else if(narrowMQ.addListener) narrowMQ.addListener(onMQ);

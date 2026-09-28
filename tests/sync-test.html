@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Guitar Studio — sync engine tests (mock Dropbox)</title>
+<style>
+  body{font:14px/1.45 system-ui,sans-serif;margin:1rem;background:#fff;color:#111}
+  h1{font-size:1.2rem} .sum{font-weight:700;font-size:1.1rem;margin:.5rem 0 1rem}
+  table{border-collapse:collapse;width:100%} td,th{border-bottom:1px solid #ddd;padding:.3rem .5rem;text-align:left;vertical-align:top}
+  .pass{color:#1a7f37;font-weight:700} .fail{color:#c62828;font-weight:700} pre{margin:0;white-space:pre-wrap;font-size:12px}
+</style>
+<script>
+  // Separate storage keys so this page never touches real app data, and no automatic triggers.
+  window.GS_CONFIG_OVERRIDE={DROPBOX_APP_KEY:'test-app-key', STORE_KEY:'gsTest.v1', DROPBOX_KEY:'gsTest.dropbox', SYNC_AUTO:false};
+  ['gsTest.v1','gsTest.dropbox','gsTest.dropbox.pkce'].forEach(k=>localStorage.removeItem(k));
+</script>
+</head>
+<body>
+<h1>Sync engine tests against a mock Dropbox</h1>
+<p>Loads the real <code>config.js</code>, <code>sync-merge.js</code>, <code>store.js</code>, <code>dropbox.js</code> and <code>sync.js</code>; <code>tests/dropbox-mock.js</code> stands in for Dropbox. "Devices" are simulated by swapping the stored data.</p>
+<div class="sum" id="sum">Running…</div>
+<table><thead><tr><th>#</th><th>Case</th><th>Result</th><th>Detail</th></tr></thead><tbody id="rows"></tbody></table>
+<script src="../js/config.js"></script>
+<script src="dropbox-mock.js"></script>
+<script>DropboxMock.install();</script>
+<script src="../js/sync-merge.js"></script>
+<script src="../js/store.js"></script>
+<script src="../js/dropbox.js"></script>
+<script src="../js/sync.js"></script>
+<script>
+(async function(){
+  const C=GS_CONFIG, M=DropboxMock, S=Store, D=DBX, SM=SyncMerge;
+  const results=[];
+  const ok=(c,msg)=>{ if(!c) throw new Error(msg||'assertion failed'); };
+  const eq=(a,b,msg)=>{ const sa=JSON.stringify(a), sb=JSON.stringify(b); if(sa!==sb) throw new Error((msg||'not equal')+'\n  got:      '+sa+'\n  expected: '+sb); };
+  async function test(name, fn){ try{ const d=await fn(); results.push({name, ok:true, detail:d||''}); }catch(e){ results.push({name, ok:false, detail:(e&&e.stack)||String(e)}); } }
+  const cloud=()=>M.getJSON(C.DATA_PATH);
+  const ids=(arr)=>arr.map(r=>r.id).sort();
+  const b64url=(bytes)=>btoa(String.fromCharCode(...bytes)).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+
+  // ---- simulated devices: each has its own practice data + Dropbox token state ----
+  const devices={}; let current=null;
+  function useDevice(name, initialData){
+    if(current){ devices[current]={store:localStorage.getItem(C.STORE_KEY), dbx:localStorage.getItem(C.DROPBOX_KEY)}; }
+    const dev=devices[name];
+    const set=(k,v)=>{ if(v==null) localStorage.removeItem(k); else localStorage.setItem(k,v); };
+    if(dev){ set(C.STORE_KEY,dev.store); set(C.DROPBOX_KEY,dev.dbx); }
+    else { set(C.STORE_KEY, initialData?JSON.stringify(initialData):null); set(C.DROPBOX_KEY,null); }
+    current=name; S.load(); D.reload();
+  }
+  async function signIn(mode){
+    await D.prepareAuth(); D.buildAuthUrl(mode||'code');
+    await D.exchangeCode('mock-auth-code');
+  }
+
+  M.addFolder('/TJ/Guitar');
+
+  await test('Authorize URL (redirect flow): client_id, response_type=code, S256 challenge, offline, redirect_uri, state', async()=>{
+    useDevice('A',null);
+    await D.prepareAuth(); const url=new URL(D.buildAuthUrl('redirect'));
+    const q=url.searchParams; const pk=JSON.parse(localStorage.getItem(C.DROPBOX_KEY+'.pkce'));
+    eq(url.origin+url.pathname,'https://www.dropbox.com/oauth2/authorize');
+    eq(q.get('client_id'),'test-app-key'); eq(q.get('response_type'),'code'); eq(q.get('code_challenge_method'),'S256'); eq(q.get('token_access_type'),'offline');
+    eq(q.get('redirect_uri'), location.origin+location.pathname); ok(q.get('state') && q.get('state')===pk.state, 'state stored');
+    const expect=b64url(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode(pk.verifier))));
+    eq(q.get('code_challenge'),expect,'challenge = BASE64URL(SHA256(verifier))'); ok(pk.verifier.length>=43 && pk.verifier.length<=128);
+    return url.toString();
+  });
+  await test('Authorize URL (code / no-redirect flow): no redirect_uri', async()=>{
+    await D.prepareAuth(); const url=new URL(D.buildAuthUrl('code')); const q=url.searchParams;
+    ok(!q.has('redirect_uri'),'redirect_uri must be absent'); eq(q.get('client_id'),'test-app-key'); eq(q.get('code_challenge_method'),'S256'); eq(q.get('token_access_type'),'offline'); ok(q.get('code_challenge'));
+    return url.toString();
+  });
+  await test('Code exchange (pasted code): PKCE verifier sent, no secret, no redirect_uri; refresh token stored separately', async()=>{
+    M.clearCalls(); await D.exchangeCode('mock-auth-code');
+    const p=M.calls('oauth2/token')[0]||M.state().calls.find(c=>c.params); const params=M.state().calls.find(c=>c.params).params;
+    eq(params.grant_type,'authorization_code'); ok(params.code_verifier); eq(params.client_id,'test-app-key'); ok(!('redirect_uri' in params)); ok(!('client_secret' in params));
+    ok(D.signedIn()); const st=JSON.parse(localStorage.getItem(C.DROPBOX_KEY)); ok(st.refreshToken && st.accessToken); ok(!localStorage.getItem(C.DROPBOX_KEY+'.pkce'),'pkce cleared');
+    ok(!(localStorage.getItem(C.STORE_KEY)||'').includes(st.refreshToken),'token not in practice data');
+  });
+  await test('Redirect-flow exchange sends the same redirect_uri', async()=>{
+    await D.prepareAuth(); D.buildAuthUrl('redirect'); M.clearCalls(); await D.exchangeCode('mock-auth-code');
+    eq(M.state().calls.find(c=>c.params).params.redirect_uri, location.origin+location.pathname);
+  });
+
+  await test('First sync on device A creates the cloud file (mode add) with everything local', async()=>{
+    const d=S.get();
+    d.sessions.push({id:'a1',date:'2026-09-20',minutes:30,cats:['Song'],song:'Lenny',notes:'A1',created:'2026-09-20T10:00:00Z',updatedAt:S.stamp(0)});
+    d.sessions.push({id:'a2',date:'2026-09-21',minutes:10,cats:[],song:'',notes:'A2',created:'2026-09-21T10:00:00Z',updatedAt:S.stamp(0)});
+    d.songs.push({id:'songA',title:'Little Wing',status:'Learning',updatedAt:S.stamp(0)});
+    S.setPref('useFlats',true); d.quiz={attempts:[{s:0,f:5,pc:9,ok:true,ms:900,mode:'find',lvl:1,ts:Date.now()-5000}]}; d.quiz.attempts[0].id=SM.attemptId(d.quiz.attempts[0]);
+    S.save();
+    M.clearCalls(); const r=await Sync.syncNow(); eq(r,'synced');
+    const up=M.calls('files/upload'); eq(up.length,1); eq(up[0].arg.mode,'add'); eq(up[0].arg.path,C.DATA_PATH);
+    const c=await cloud(); eq(ids(c.sessions),['a1','a2']); eq(ids(c.songs),['s1','songA']); eq(c.prefs.useFlats,true); eq(c.quiz.attempts.length,1);
+    ok(D.info().lastSyncedAt>0); eq(D.info().pathRoot,{prefix:'',root:null});
+  });
+  await test('Sync again with no changes: downloads only, no upload', async()=>{
+    M.clearCalls(); eq(await Sync.syncNow(),'synced'); eq(M.calls('files/upload').length,0); eq(M.calls('files/download').length,1);
+  });
+
+  // Device B: old-format data (no ids, no updatedAt, pristine seed song, old `updated` on a song)
+  const oldFormat={sessions:[{date:'2026-08-30',minutes:20,cats:['Technique'],song:'',notes:'B old, no id',created:'2026-08-30T08:00:00.000Z'},
+                             {id:'b1',date:'2026-09-02',minutes:40,cats:['Song'],song:'Slow Dancing in a Burning Room',tempo:62,notes:'B1',created:'2026-09-02T08:00:00.000Z'}],
+    songs:[{id:'s1', title:'Slow Dancing in a Burning Room', artist:'John Mayer', status:'Learning', key:'C#m', tuning:'Standard', tempo:70, curTempo:'', sections:'Intro riff (C#m–A–E–B feel, hybrid picking)\nVerse comping\nChorus\nSolo phrasing', notes:'Current focus. Bend intonation on the intro; keep thumb steady on the bass notes.', links:'', added:'2026-08-16'},
+           {id:'songB', title:'Pride and Joy', status:'Want', updated:1757000000000}],
+    prefs:{useFlats:false, tone:'electric'}, version:1,
+    quiz:{attempts:[{s:1,f:2,pc:11,ok:false,ms:3000,mode:'name',lvl:2,ts:1757000000000}]},
+    videos:{'2026-09-01_1900_Lenny.mp4':{song:'Lenny',notes:'check bends',date:'2026-09-01',reviewed:false}}};
+  await test('Old-format data loads on device B (ids + timestamps filled in, nothing dropped)', async()=>{
+    useDevice('B', oldFormat);
+    ok(!S.loadFailed()); const d=S.get(); eq(d.sessions.length,2); ok(d.sessions.every(s=>s.id && typeof s.updatedAt==='number'));
+    eq(d.songs.find(s=>s.id==='songB').updatedAt,1757000000000,'old `updated` becomes updatedAt'); eq(d.songs.find(s=>s.id==='s1').updatedAt,0);
+    ok(d.quiz.attempts[0].id); eq(d.videos['2026-09-01_1900_Lenny.mp4'].updatedAt,0);
+  });
+  await test('First sync on device B merges both ways with no loss (and one seed song)', async()=>{
+    await signIn('code');
+    eq(await Sync.syncNow(),'synced');
+    const d=S.get(); eq(d.sessions.length,4); eq(d.songs.map(s=>s.id).sort(),['s1','songA','songB']);
+    eq(d.quiz.attempts.length,2); ok(d.videos['2026-09-01_1900_Lenny.mp4']); eq(d.prefs.useFlats,true,'A set useFlats with a timestamp, B never did'); eq(d.prefs.tone,'electric');
+    const c=await cloud(); ok(SM.equal(c,d),'cloud == B local');
+  });
+  await test('Device A picks up B\'s data on its next sync', async()=>{
+    useDevice('A'); eq(await Sync.syncNow(),'synced'); const d=S.get(); eq(d.sessions.length,4); eq(d.songs.length,3); ok(SM.equal(d, await cloud()));
+  });
+  await test('Delete on A syncs to B (tombstone kept, hidden)', async()=>{
+    S.remove('sessions','a1'); S.save(); eq(await Sync.syncNow(),'synced');
+    useDevice('B'); eq(await Sync.syncNow(),'synced');
+    ok(!S.get().sessions.some(s=>s.id==='a1')); ok(S.get().deleted.sessions.some(t=>t.id==='a1' && t.deleted));
+  });
+  await test('Edit on B after A\'s edit: later edit wins on both devices', async()=>{
+    useDevice('A'); const sa=S.get().songs.find(s=>s.id==='songA'); sa.curTempo=70; S.touch(sa); S.save(); await Sync.syncNow();
+    useDevice('B'); const sb=S.get().songs.find(s=>s.id==='songA'); ok(!sb.curTempo,'B has not seen it yet'); sb.status='Polishing'; S.touch(sb); S.save(); await Sync.syncNow();
+    eq(S.get().songs.find(s=>s.id==='songA').status,'Polishing');
+    useDevice('A'); await Sync.syncNow(); eq(S.get().songs.find(s=>s.id==='songA').status,'Polishing');
+  });
+  await test('409 conflict: another device writes between download and upload → re-download, re-merge, retry', async()=>{
+    useDevice('A'); S.get().sessions.push({id:'a3',date:'2026-09-25',minutes:15,cats:[],notes:'A3',created:'',updatedAt:S.stamp(0)}); S.save();
+    M.beforeUpload(async()=>{ const c=await cloud(); c.sessions.push({id:'c1',date:'2026-09-25',minutes:5,cats:[],notes:'from device C',created:'',updatedAt:Date.now()}); M.put(C.DATA_PATH, JSON.stringify(c)); });
+    M.clearCalls(); eq(await Sync.syncNow(),'synced');
+    eq(M.calls('files/upload').length,2,'one conflict + one retry'); eq(M.calls('files/download').length,2);
+    const c=await cloud(); ok(c.sessions.some(s=>s.id==='a3')&&c.sessions.some(s=>s.id==='c1'),'both writes survive'); ok(S.get().sessions.some(s=>s.id==='c1'));
+  });
+  await test('Offline → online: fails quietly as "offline", keeps local data, syncs when back', async()=>{
+    S.get().sessions.push({id:'a4',date:'2026-09-26',minutes:12,cats:[],notes:'offline session',created:'',updatedAt:S.stamp(0)}); S.save();
+    M.set({offline:true}); eq(await Sync.syncNow(),'offline'); eq(Sync.view(),'offline'); ok(S.get().sessions.some(s=>s.id==='a4')); ok(!D.info().lastError,'no error shown for network trouble');
+    M.set({offline:false}); eq(await Sync.syncNow(),'synced'); ok((await cloud()).sessions.some(s=>s.id==='a4'));
+  });
+  await test('Expired access token → refreshed automatically and the call retried', async()=>{
+    M.expireTokens(); M.clearCalls(); eq(await Sync.syncNow(),'synced');
+    const refreshes=M.state().calls.filter(c=>c.params&&c.params.grant_type==='refresh_token'); eq(refreshes.length,1); eq(refreshes[0].params.client_id,'test-app-key');
+  });
+  await test('Unreadable local data (blocked): never uploads', async()=>{
+    const good=localStorage.getItem(C.STORE_KEY); localStorage.setItem(C.STORE_KEY,'{not json'); S.load(); ok(S.loadFailed());
+    M.clearCalls(); eq(await Sync.syncNow(),'blocked'); eq(M.calls().length,0,'no Dropbox calls at all');
+    localStorage.setItem(C.STORE_KEY,good); Object.keys(localStorage).filter(k=>k.startsWith(C.STORE_KEY+'.corrupt-')).forEach(k=>localStorage.removeItem(k)); S.load(); ok(!S.loadFailed());
+  });
+  await test('Unreadable cloud file: left untouched, error shown, local data intact', async()=>{
+    const before=M.get(C.DATA_PATH); M.put(C.DATA_PATH,'<<garbage>>'); const n=S.get().sessions.length;
+    M.clearCalls(); eq(await Sync.syncNow(),'error'); eq(M.calls('files/upload').length,0); eq(M.get(C.DATA_PATH),'<<garbage>>'); eq(S.get().sessions.length,n); ok(/unreadable/.test(D.info().lastError));
+    M.put(C.DATA_PATH,before); eq(await Sync.syncNow(),'synced'); ok(!D.info().lastError);
+  });
+  await test('Non-ASCII text (song titles, file names) → Dropbox-API-Arg headers stay ASCII, content intact', async()=>{
+    S.get().songs.push({id:'songU',title:'Café — Añoranza ☃ 日本',status:'Want',updatedAt:S.stamp(0)}); S.save(); await Sync.syncNow();
+    await D.uploadFile(C.VIDEO_DIR+'/2026-09-27_Café ☃.mp4', new Blob(['x']), {modified:Date.now()});
+    eq(M.state().nonAsciiHeaders,0,'headers contain only ASCII'); eq((await cloud()).songs.find(s=>s.id==='songU').title,'Café — Añoranza ☃ 日本');
+    const arg=D.headerJSON({path:'/é'}); eq(arg,'{"path":"/\\u00e9"}');
+  });
+  await test('Videos: small upload, large upload via upload session (8 MB chunks), listing (paged) + temporary link', async()=>{
+    M.clearCalls();
+    await D.uploadFile(C.VIDEO_DIR+'/small.mp4', new Blob([new Uint8Array(1024*1024)],{type:'video/mp4'}), {modified:Date.parse('2026-09-27T10:00:00Z')});
+    const big=new Blob([new Uint8Array(20*1024*1024+123)],{type:'video/mp4'}); let prog=[];
+    const m=await D.uploadFile(C.VIDEO_DIR+'/big.mp4', big, {onProgress:p=>prog.push(p)});
+    eq(M.calls('files/upload_session/start').length,1); eq(M.calls('files/upload_session/append_v2').length,1); eq(M.calls('files/upload_session/finish').length,1);
+    eq(m.size,big.size); eq(prog[prog.length-1],1);
+    await D.uploadFile(C.VIDEO_DIR+'/small.mp4', new Blob(['again']), {}); // same name: never overwrites
+    const list=await D.listFolder(C.VIDEO_DIR); const names=list.map(x=>x.name).sort();
+    eq(names,['2026-09-27_Café ☃.mp4','big.mp4','small (1).mp4','small.mp4']); ok(M.calls('files/list_folder/continue').length>=1,'pagination followed');
+    eq(list.find(x=>x.name==='small.mp4').client_modified,'2026-09-27T10:00:00Z');
+    const link=await D.tempLink(list.find(x=>x.name==='big.mp4').path_lower); ok(/^https:\/\/dl\.dropboxusercontent\.com\//.test(link));
+    eq(await D.listFolder('/TJ/Guitar/nope'),[]);
+  });
+  await test('Business account fallback: /TJ/Guitar not visible in home → root namespace + /TJ Mitchell prefix, cached', async()=>{
+    const snapshot=JSON.parse(JSON.stringify({files:M.state().files}));
+    M.set({team:true, homeBroken:true, files:{}, folders:{}}); M.addFolder('/TJ Mitchell/TJ/Guitar');
+    useDevice('T', null); await signIn('redirect'); M.clearCalls();
+    eq(await Sync.syncNow(),'synced');
+    eq(D.info().pathRoot,{prefix:'/TJ Mitchell',root:'100'});
+    const up=M.calls('files/upload')[0]; eq(up.arg.path,'/TJ Mitchell/TJ/Guitar/guitar-studio-data.json'); eq(JSON.parse(up.pathRoot),{'.tag':'root',root:'100'});
+    ok(M.get('/TJ Mitchell/TJ/Guitar/guitar-studio-data.json'),'file in the member folder');
+    M.clearCalls(); await Sync.syncNow(); eq(M.calls('users/get_current_account').length,0,'cached: no second lookup');
+    M.set({team:false, homeBroken:false, files:snapshot.files}); M.addFolder('/TJ/Guitar');
+  });
+  await test('Folder missing everywhere: clear error, nothing uploaded; "Create it" then works', async()=>{
+    M.set({files:{}, folders:{}}); useDevice('N', null); await signIn('code'); M.clearCalls();
+    eq(await Sync.syncNow(),'error'); ok(/Couldn't find/.test(D.info().lastError)); eq(M.calls('files/upload').length,0);
+    D.useHomeRoot(); eq(await Sync.syncNow(),'synced'); ok(M.get(C.DATA_PATH));
+  });
+  await test('Sign out revokes the token and keeps local data', async()=>{
+    const before=localStorage.getItem(C.STORE_KEY); M.clearCalls(); await D.signOut();
+    eq(M.calls('auth/token/revoke').length,1); ok(!D.signedIn()); eq(localStorage.getItem(C.STORE_KEY),before); eq(Sync.view(),'signedout');
+    eq(await Sync.syncNow(),'signedout');
+  });
+  await test('Revoked elsewhere: refresh fails → "reconnect", local data kept, no retry storm', async()=>{
+    useDevice('A'); M.set({revoked:true}); M.expireTokens(); const before=localStorage.getItem(C.STORE_KEY);
+    eq(await Sync.syncNow(),'error'); eq(Sync.view(),'reconnect'); eq(localStorage.getItem(C.STORE_KEY),before);
+    M.clearCalls(); await Sync.syncNow(); eq(M.calls().length,0,'no calls while reconnect is needed');
+  });
+
+  const rows=document.getElementById('rows'); let pass=0;
+  results.forEach((r,i)=>{ if(r.ok) pass++; const tr=document.createElement('tr'); tr.innerHTML=`<td>${i+1}</td><td></td><td class="${r.ok?'pass':'fail'}">${r.ok?'PASS':'FAIL'}</td><td><pre></pre></td>`; tr.children[1].textContent=r.name; tr.querySelector('pre').textContent=r.detail; rows.append(tr); });
+  const sum=document.getElementById('sum'); sum.textContent=`${pass}/${results.length} passed`+(pass===results.length?' — all green':''); sum.className='sum '+(pass===results.length?'pass':'fail');
+  window.__syncResults={pass,total:results.length,failed:results.filter(r=>!r.ok).map(r=>r.name+': '+r.detail)};
+  ['gsTest.v1','gsTest.dropbox','gsTest.dropbox.pkce'].forEach(k=>localStorage.removeItem(k));
+})();
+</script>
+</body>
+</html>

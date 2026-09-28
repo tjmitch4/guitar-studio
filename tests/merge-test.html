@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Guitar Studio — merge tests</title>
+<style>
+  body{font:14px/1.45 system-ui,sans-serif;margin:1rem;background:#fff;color:#111}
+  h1{font-size:1.2rem} .sum{font-weight:700;font-size:1.1rem;margin:.5rem 0 1rem}
+  table{border-collapse:collapse;width:100%} td,th{border-bottom:1px solid #ddd;padding:.3rem .5rem;text-align:left;vertical-align:top}
+  .pass{color:#1a7f37;font-weight:700} .fail{color:#c62828;font-weight:700} pre{margin:0;white-space:pre-wrap;font-size:12px}
+</style>
+</head>
+<body>
+<h1>Sync merge tests (<code>js/sync-merge.js</code>)</h1>
+<div class="sum" id="sum">Running…</div>
+<table><thead><tr><th>#</th><th>Case</th><th>Result</th><th>Detail</th></tr></thead><tbody id="rows"></tbody></table>
+<script src="../js/sync-merge.js"></script>
+<script>
+(function(){
+  const SM=window.SyncMerge;
+  const results=[];
+  function test(name, fn){
+    try{ const r=fn(); results.push({name, ok:r===true, detail:r===true?'':String(r)}); }
+    catch(e){ results.push({name, ok:false, detail:(e&&e.stack)||String(e)}); }
+  }
+  const eq=(a,b,msg)=>{ const sa=JSON.stringify(a), sb=JSON.stringify(b); if(sa!==sb) throw new Error((msg||'not equal')+'\n  got:      '+sa+'\n  expected: '+sb); };
+  const ok=(c,msg)=>{ if(!c) throw new Error(msg||'assertion failed'); };
+  const ids=(arr)=>arr.map(r=>r.id).sort();
+  const find=(arr,id)=>arr.find(r=>r.id===id);
+  const both=(a,b)=>{ const m1=SM.merge(a,b), m2=SM.merge(b,a); ok(SM.equal(m1,m2),'merge is not commutative:\n'+SM.canonical(m1)+'\n'+SM.canonical(m2)); return m1; };
+  const seed=()=>({id:'s1', title:'Slow Dancing in a Burning Room', artist:'John Mayer', status:'Learning', key:'C#m', tuning:'Standard', tempo:70, curTempo:'', sections:'Intro riff', notes:'Current focus.', links:'', added:'2026-08-16', updatedAt:0});
+  const sess=(id,t,extra)=>Object.assign({id, date:'2026-09-01', minutes:20, cats:['Technique'], song:'', notes:'', created:'2026-09-01T10:00:00.000Z', updatedAt:t},extra||{});
+
+  test('Disjoint devices: every session and song from both sides survives', ()=>{
+    const A={sessions:[sess('a1',100),sess('a2',200)], songs:[seed(), {id:'x', title:'Little Wing', status:'Want', updatedAt:50}], prefs:{}};
+    const B={sessions:[sess('b1',150)], songs:[seed(), {id:'y', title:'Lenny', status:'Learning', updatedAt:60}], prefs:{}};
+    const m=both(A,B);
+    eq(ids(m.sessions),['a1','a2','b1']); eq(ids(m.songs),['s1','x','y']); return true;
+  });
+  test('Same session edited on both devices: the later edit wins (either order)', ()=>{
+    const A={sessions:[sess('s',1000,{minutes:30,notes:'A edit'})]};
+    const B={sessions:[sess('s',2000,{minutes:45,notes:'B edit'})]};
+    const m=both(A,B); eq(m.sessions.length,1); eq(m.sessions[0].notes,'B edit'); eq(m.sessions[0].minutes,45); return true;
+  });
+  test('Same song edited on both, different fields: whole-record last-write-wins', ()=>{
+    const A={songs:[Object.assign(seed(),{curTempo:60, updatedAt:5000})]};
+    const B={songs:[Object.assign(seed(),{status:'Polishing', updatedAt:4000})]};
+    const m=both(A,B); eq(find(m.songs,'s1').curTempo,60); eq(find(m.songs,'s1').status,'Learning'); return true;
+  });
+  test('Delete (newer) vs edit (older): stays deleted, tombstone kept, hidden from the list', ()=>{
+    const A={sessions:[], deleted:{sessions:[{id:'s',deleted:true,updatedAt:3000}]}};
+    const B={sessions:[sess('s',2000,{notes:'edited'})]};
+    const m=both(A,B); eq(m.sessions.length,0); eq(m.deleted.sessions,[{id:'s',deleted:true,updatedAt:3000}]); return true;
+  });
+  test('Edit (newer) vs delete (older): the edit wins and the record comes back', ()=>{
+    const A={sessions:[], deleted:{sessions:[{id:'s',deleted:true,updatedAt:3000}]}};
+    const B={sessions:[sess('s',4000,{notes:'edited later'})]};
+    const m=both(A,B); eq(m.sessions.length,1); eq(m.sessions[0].notes,'edited later'); eq(m.deleted.sessions.length,0); return true;
+  });
+  test('Delete vs edit at the exact same ms: delete wins (deterministic tie-break)', ()=>{
+    const A={deleted:{songs:[{id:'x',deleted:true,updatedAt:777}]}};
+    const B={songs:[{id:'x',title:'T',status:'Want',updatedAt:777}]};
+    const m=both(A,B); eq(m.songs.length,0); eq(m.deleted.songs[0].id,'x'); return true;
+  });
+  test('Equal timestamps, different content: both devices pick the same winner', ()=>{
+    const A={sessions:[sess('s',0,{notes:'alpha'})]}, B={sessions:[sess('s',0,{notes:'beta'})]};
+    const m=both(A,B); eq(m.sessions.length,1); return true;
+  });
+  test('Old data without timestamps: updatedAt becomes 0 and merges without duplicates', ()=>{
+    const old={id:'old1', date:'2026-08-20', minutes:15, cats:[], song:'', notes:'n', created:'2026-08-20T10:00:00.000Z'};
+    const A={sessions:[Object.assign({},old)]}, B={sessions:[Object.assign({},old), sess('new',1234)]};
+    const m=both(A,B); eq(ids(m.sessions),['new','old1']); eq(find(m.sessions,'old1').updatedAt,0); return true;
+  });
+  test('Old records with no id get the same content-hash id on both devices (no duplicates)', ()=>{
+    const rec=()=>({date:'2026-08-21', minutes:25, cats:['Song'], song:'Lenny', notes:'no id here', created:'2026-08-21T09:00:00.000Z'});
+    const A={sessions:[rec()]}, B={sessions:[rec()]};
+    const m=both(A,B); eq(m.sessions.length,1); ok(/^h[0-9a-z]+$/.test(m.sessions[0].id),'id should be a content hash, got '+m.sessions[0].id);
+    const again=SM.normalize({sessions:[rec()]}); eq(again.sessions[0].id, m.sessions[0].id, 'id must be deterministic'); return true;
+  });
+  test('Two identical id-less records on ONE device both survive (deterministic -2 suffix)', ()=>{
+    const rec=()=>({date:'2026-08-21', minutes:5, cats:[], notes:'dup'});
+    const n=SM.normalize({sessions:[rec(),rec()]}); eq(n.sessions.length,2); ok(n.sessions[1].id===n.sessions[0].id+'-2'); return true;
+  });
+  test('Seeded song s1, pristine on both devices: merges into one', ()=>{
+    const m=both({songs:[seed()]},{songs:[seed()]}); eq(m.songs.length,1); eq(m.songs[0].id,'s1'); return true;
+  });
+  test('Seeded song s1 edited on one device (old `updated` field → updatedAt), pristine on the other: edit wins', ()=>{
+    const edited=Object.assign(seed(),{curTempo:64, updatedAt:1758000000000});
+    const m=both({songs:[seed()]},{songs:[edited]}); eq(m.songs.length,1); eq(m.songs[0].curTempo,64); return true;
+  });
+  test('Seeded song s1 deleted on one device: stays deleted when merged with a fresh device', ()=>{
+    const m=both({songs:[], deleted:{songs:[{id:'s1',deleted:true,updatedAt:99}]}},{songs:[seed()]}); eq(m.songs.length,0); return true;
+  });
+  test('Prefs: per-field last-write-wins with timestamps', ()=>{
+    const A={prefs:{useFlats:true, tone:'electric', sound:true}, prefsMeta:{useFlats:500, tone:100}};
+    const B={prefs:{useFlats:false, tone:'acoustic'}, prefsMeta:{useFlats:400, tone:200}};
+    const m=both(A,B); eq(m.prefs,{useFlats:true, tone:'acoustic', sound:true}); eq(m.prefsMeta.useFlats,500); eq(m.prefsMeta.tone,200); return true;
+  });
+  test('Prefs without timestamps (old data): a key set on only one device is kept; ties are deterministic', ()=>{
+    const A={prefs:{useFlats:false}}, B={prefs:{useFlats:true, tone:'nylon'}};
+    const m=both(A,B); eq(m.prefs.tone,'nylon'); ok(typeof m.prefs.useFlats==='boolean'); return true;
+  });
+  test('Trainer answers: append-only union by id, duplicates collapse, old ones get content ids', ()=>{
+    const a=(ts,ok)=>({s:0,f:3,pc:7,ok,ms:1200,mode:'find',lvl:1,ts});
+    const A={quiz:{attempts:[a(1,true),a(2,false)]}}, B={quiz:{attempts:[a(2,false),a(3,true)]}};
+    const m=both(A,B); eq(m.quiz.attempts.map(x=>x.ts),[1,2,3]); ok(m.quiz.attempts.every(x=>/^q/.test(x.id))); return true;
+  });
+  test('Trainer answers: cap of 4000 keeps the newest', ()=>{
+    const mk=(from,to)=>{ const out=[]; for(let t=from;t<to;t++) out.push({s:t%6,f:t%12,pc:t%12,ok:t%3>0,ms:900,mode:'find',lvl:2,ts:1e12+t}); return out; };
+    const A={quiz:{attempts:mk(0,3000)}}, B={quiz:{attempts:mk(2000,5000)}};
+    const m=both(A,B); eq(m.quiz.attempts.length,SM.ATTEMPT_CAP); eq(m.quiz.attempts[0].ts,1e12+1000); eq(m.quiz.attempts[3999].ts,1e12+4999); return true;
+  });
+  test('Trainer "Reset stats" on one device: older answers from the other device stay gone', ()=>{
+    const a=(ts)=>({s:1,f:2,pc:11,ok:true,ms:800,mode:'find',lvl:2,ts});
+    const A={quiz:{attempts:[a(50)], resetAt:100}}, B={quiz:{attempts:[a(10),a(90),a(150)]}};
+    const m=both(A,B); eq(m.quiz.attempts.map(x=>x.ts),[150]); eq(m.quiz.resetAt,100); return true;
+  });
+  test('Video notes (keyed by file name): newer note wins; delete leaves a tombstone', ()=>{
+    const A={videos:{'a.mp4':{song:'X',notes:'old',reviewed:false,date:'2026-09-01',updatedAt:10}, 'b.mp4':{notes:'keep',updatedAt:5}}};
+    const B={videos:{'a.mp4':{song:'X',notes:'new',reviewed:true,date:'2026-09-01',updatedAt:20}}, deleted:{videos:[{id:'b.mp4',deleted:true,updatedAt:6}]}};
+    const m=both(A,B); eq(m.videos['a.mp4'].notes,'new'); ok(!('b.mp4' in m.videos)); eq(m.deleted.videos[0].id,'b.mp4'); ok(!('id' in m.videos['a.mp4'])); return true;
+  });
+  test('First sync into an empty cloud file: nothing lost', ()=>{
+    const A={sessions:[sess('a',1)], songs:[seed()], prefs:{useFlats:true}, quiz:{attempts:[{s:0,f:1,pc:5,ok:true,ms:1,ts:5}]}, videos:{'v.mp4':{notes:'n'}}};
+    const m=both(A,{}); eq(ids(m.sessions),['a']); eq(m.songs.length,1); eq(m.prefs.useFlats,true); eq(m.quiz.attempts.length,1); ok(m.videos['v.mp4']); return true;
+  });
+  test('Idempotent: merging again with the same cloud copy changes nothing', ()=>{
+    const A={sessions:[sess('a',1)], songs:[seed()], deleted:{sessions:[{id:'z',deleted:true,updatedAt:3}]}, prefs:{x:1}, prefsMeta:{x:2}};
+    const B={sessions:[sess('b',2)], quiz:{attempts:[{s:0,f:1,pc:5,ok:true,ms:1,ts:5}]}};
+    const m=SM.merge(A,B); ok(SM.equal(SM.merge(m,B),m),'merge(m,B)!=m'); ok(SM.equal(SM.merge(m,m),m),'merge(m,m)!=m'); ok(SM.equal(SM.merge(B,m),m),'merge(B,m)!=m'); return true;
+  });
+  test('Inputs are never modified', ()=>{
+    const A={sessions:[{date:'2026-01-01',minutes:1}]}, B={songs:[seed()]};
+    const sa=JSON.stringify(A), sb=JSON.stringify(B); SM.merge(A,B); eq(JSON.stringify(A),sa); eq(JSON.stringify(B),sb); return true;
+  });
+  test('Import (tiePrefer local): an old backup never overwrites a local edit that has no timestamp', ()=>{
+    const local={sessions:[sess('s',0,{notes:'local edit'})]}, backup={sessions:[sess('s',0,{notes:'zzz older backup'})]};
+    const m=SM.merge(local,backup,{tiePrefer:'local'}); eq(m.sessions[0].notes,'local edit'); return true;
+  });
+  test('Unknown top-level fields are kept (forward compatible)', ()=>{
+    const m=both({sessions:[], futureThing:{a:1}},{sessions:[]}); eq(m.futureThing,{a:1}); return true;
+  });
+  test('Order-insensitive equality (no endless re-uploads from different array orders)', ()=>{
+    const A={sessions:[sess('a',1),sess('b',2)]}, B={sessions:[sess('b',2),sess('a',1)]};
+    ok(SM.equal(A,B)); ok(!SM.equal(A,{sessions:[sess('a',1)]})); return true;
+  });
+
+  const rows=document.getElementById('rows'); let pass=0;
+  results.forEach((r,i)=>{ if(r.ok) pass++; const tr=document.createElement('tr'); tr.innerHTML=`<td>${i+1}</td><td></td><td class="${r.ok?'pass':'fail'}">${r.ok?'PASS':'FAIL'}</td><td><pre></pre></td>`; tr.children[1].textContent=r.name; tr.querySelector('pre').textContent=r.detail; rows.append(tr); });
+  const sum=document.getElementById('sum'); sum.textContent=`${pass}/${results.length} passed`+(pass===results.length?' — all green':''); sum.className='sum '+(pass===results.length?'pass':'fail');
+  window.__mergeResults={pass,total:results.length,failed:results.filter(r=>!r.ok)};
+})();
+</script>
+</body>
+</html>

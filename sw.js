@@ -2,14 +2,14 @@
 // Strategy: NETWORK-FIRST for same-origin GETs (so a new push shows up on the next load when online),
 // falling back to the cache when offline. Bump VERSION to force old caches to be dropped.
 // Bump on every release (date + letter) so phones drop the old cache.
-const VERSION = 'gs-2026-09-28a';
+const VERSION = 'gs-2026-09-28b';
 const CORE = [
   './',
   'index.html',
   'css/style.css',
-  'js/music.js', 'js/voicings.js', 'js/tone.js', 'js/store.js',
+  'js/music.js', 'js/voicings.js', 'js/tone.js', 'js/config.js', 'js/sync-merge.js', 'js/store.js', 'js/dropbox.js',
   'js/fretboard-ui.js', 'js/theory-ui.js', 'js/practice-ui.js', 'js/songs-ui.js',
-  'js/trainer-ui.js', 'js/videos-ui.js', 'js/tuner-ui.js', 'js/app.js',
+  'js/trainer-ui.js', 'js/videos-ui.js', 'js/tuner-ui.js', 'js/sync.js', 'js/app.js',
   'manifest.webmanifest',
   'icons/icon-192.png', 'icons/icon-512.png', 'icons/icon-maskable-512.png', 'icons/apple-touch-icon.png',
 ];
@@ -35,6 +35,8 @@ self.addEventListener('fetch', (e) => {
   const req = e.request;
   if (req.method !== 'GET') return;
   const url = new URL(req.url);
+  // Never touch Dropbox traffic (API, file content, sign-in, temporary video links): always network, never cached.
+  if (/(^|\.)(dropboxapi|dropbox|dropboxusercontent)\.com$/.test(url.hostname)) return;
   if (url.origin !== self.location.origin) return;   // let cross-origin requests pass straight through
   if (req.headers.has('range')) return;              // media range requests: don't cache
   e.respondWith(networkFirst(req));

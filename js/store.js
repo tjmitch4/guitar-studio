@@ -1,17 +1,22 @@
 // Simple localStorage-backed store with JSON export/import.
+// Every list record has a stable `id` and an `updatedAt` (ms) so devices can be merged (see js/sync-merge.js).
+// Deleting a record leaves a tombstone in data.deleted[collection] so the delete syncs too.
 window.Store = (() => {
-  const KEY='guitarStudio.v1';
+  const CFG=window.GS_CONFIG||{};
+  const KEY=CFG.STORE_KEY||'guitarStudio.v1';
+  const SM=window.SyncMerge;
   const DEFAULT_S1 = {id:'s1', title:'Slow Dancing in a Burning Room', artist:'John Mayer', status:'Learning', key:'C#m', tuning:'Standard', tempo:70, curTempo:'',
        sections:'Intro riff (C#m–A–E–B feel, hybrid picking)\nVerse comping\nChorus\nSolo phrasing', notes:'Current focus. Bend intonation on the intro; keep thumb steady on the bass notes.', links:'', added:'2026-08-16'};
   const defaults = () => ({
     sessions: [],
-    songs: [ Object.assign({}, DEFAULT_S1) ],
+    songs: [ Object.assign({updatedAt:0}, DEFAULT_S1) ],
     prefs: {useFlats:false},
     version:1,
   });
   let data;
   let loadFailed=false, rawBackupKey=null, rawCorrupt=null;
   let onError=null; // set by App: called with {type:'load'|'save', error}
+  const changeListeners=[];
 
   const isObj = (v) => v!=null && typeof v==='object' && !Array.isArray(v);
   // Escape user text for innerHTML (& < > " ').
@@ -19,22 +24,29 @@ window.Store = (() => {
   // Local calendar date (YYYY-MM-DD) for a timestamp/Date — never UTC.
   const localDate = (ts) => { const d = ts==null ? new Date() : new Date(ts); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`; };
   const uid = () => Math.random().toString(36).slice(2,9)+Date.now().toString(36);
+  // A fresh edit timestamp: now, but always later than the record's previous one (guards against clock skew).
+  const stamp = (prev) => Math.max(Date.now(), (+prev||0)+1);
 
   // Fill in missing fields so older / hand-edited data can't crash the UI. Additive only.
+  // Records without an id get a deterministic content-hash id (in SyncMerge.normalize), so the same
+  // old record on two devices doesn't turn into two records.
   function normSession(s){
     if(!isObj(s)) return null;
-    if(!s.id) s.id=uid();
     if(typeof s.date!=='string' || !/^\d{4}-\d{2}-\d{2}/.test(s.date)) s.date = s.created ? localDate(s.created) : localDate();
     if(typeof s.created!=='string') s.created='';
     if(!Array.isArray(s.cats)) s.cats=[];
     s.minutes = +s.minutes||0;
     return s;
   }
+  const isPristineDefault=(s)=>{ const {updated, updatedAt, ...rest}=s; return JSON.stringify(rest)===JSON.stringify(DEFAULT_S1); };
   function normSong(s){
     if(!isObj(s)) return null;
-    if(!s.id) s.id=uid();
     if(typeof s.title!=='string') s.title=String(s.title||'Untitled');
     if(!['Want','Learning','Polishing','Can play'].includes(s.status)) s.status='Want';
+    if(typeof s.updatedAt!=='number' || !isFinite(s.updatedAt)){
+      // older versions kept an `updated` edit time on songs; an edited seed song without one still beats the pristine seed (0)
+      s.updatedAt = (+s.updated>0) ? +s.updated : (s.id==='s1' && !isPristineDefault(s) ? 1 : 0);
+    }
     return s;
   }
   function normalize(d){
@@ -45,7 +57,7 @@ window.Store = (() => {
     d.songs=d.songs.map(normSong).filter(Boolean);
     if(d.quiz!=null && (!isObj(d.quiz) || !Array.isArray(d.quiz.attempts))) d.quiz={attempts:[]};
     if(d.videos!=null && !isObj(d.videos)) d.videos={};
-    return d;
+    return SM.normalize(d);
   }
 
   function load(){
@@ -58,7 +70,7 @@ window.Store = (() => {
       loadFailed=false;
     }catch(e){
       // Never overwrite unreadable data: keep a copy and refuse to save until the user decides.
-      data = defaults();
+      data = normalize(defaults());
       loadFailed=true; rawCorrupt=raw;
       // reuse an identical backup from an earlier load instead of piling up copies
       try{ for(let i=0;i<localStorage.length;i++){ const k=localStorage.key(i); if(k && k.startsWith(KEY+'.corrupt-') && localStorage.getItem(k)===(raw||'')){ rawBackupKey=k; break; } } }catch(e2){}
@@ -68,13 +80,43 @@ window.Store = (() => {
     }
     return data;
   }
-  function save(){
+  // save() persists and tells listeners (the sync engine) that something changed.
+  // save({silent:true}) is used by sync itself so a merged download doesn't schedule another upload.
+  function save(opts){
     if(loadFailed) return false; // protect the unreadable original until the user chooses
-    try{ localStorage.setItem(KEY, JSON.stringify(data)); return true; }
+    try{ localStorage.setItem(KEY, JSON.stringify(data)); }
     catch(e){ console.error('Guitar Studio: save failed', e); onError && onError({type:'save', error:e}); return false; }
+    if(!(opts && opts.silent)) changeListeners.forEach(fn=>{ try{ fn(); }catch(e){ console.error(e); } });
+    return true;
   }
   // User chose "Start fresh" after a failed load (the raw copy stays in its backup key).
-  function startFresh(){ loadFailed=false; data=defaults(); return save(); }
+  function startFresh(){ loadFailed=false; data=normalize(defaults()); return save(); }
+
+  // ---- Mutation helpers (every edit goes through these so it syncs correctly) ----
+  function touch(rec){ if(rec) rec.updatedAt=stamp(rec.updatedAt); return rec; }
+  // Remove a record and leave a tombstone. collection: 'sessions' | 'songs' | 'videos' (videos: id = file name).
+  function remove(collection, id){
+    if(id==null) return;
+    id=String(id);
+    let prev=0;
+    if(collection==='videos'){ if(isObj(data.videos) && data.videos[id]){ prev=data.videos[id].updatedAt; delete data.videos[id]; } }
+    else { const arr=data[collection]||[]; const r=arr.find(x=>x.id===id); if(r) prev=r.updatedAt; data[collection]=arr.filter(x=>x.id!==id); }
+    if(!isObj(data.deleted)) data.deleted={};
+    const list=data.deleted[collection]=(data.deleted[collection]||[]).filter(t=>t.id!==id);
+    list.push({id, deleted:true, updatedAt:stamp(prev)});
+  }
+  function setPref(k, v){
+    if(!isObj(data.prefs)) data.prefs={};
+    if(!isObj(data.prefsMeta)) data.prefsMeta={};
+    data.prefs[k]=v; data.prefsMeta[k]=stamp(data.prefsMeta[k]);
+  }
+  // Sync: swap in merged data (already normalized by SyncMerge) and persist without re-triggering sync.
+  function replaceData(next){
+    if(loadFailed) return false;
+    const prev=data; data=normalize(next);
+    if(!save({silent:true})){ data=prev; return false; }
+    return true;
+  }
 
   // iPhone/iPad (iPadOS reports itself as a Mac with touch). There, <a download> is unreliable —
   // especially in a home-screen app — so hand files to the Share sheet ("Save to Files", "Save Video").
@@ -100,34 +142,22 @@ window.Store = (() => {
     const blob=new Blob([rawCorrupt||''],{type:'text/plain'});
     return saveFile(blob, `guitar-studio-raw-${localDate()}.txt`);
   }
-  // Merge a backup into the current data. Nothing local is deleted.
+  // Merge a backup into the current data, using the same rules as sync. On an exact timestamp tie the
+  // local copy is kept, so importing an old backup never overwrites local edits made without timestamps.
   function mergeData(inc){
     if(!isObj(inc)) throw new Error('Not a Guitar Studio backup (expected a JSON object).');
+    inc=normalize(Object.assign({}, JSON.parse(JSON.stringify(inc))));
+    const before=data;
+    const merged=normalize(SM.merge(before, inc, {tiePrefer:'local'}));
+    const ids=(arr)=>new Map((arr||[]).map(r=>[r.id,SM.stable(r)]));
+    const bS=ids(before.sessions), bG=ids(before.songs);
     const c={sessions:0, songsAdded:0, songsUpdated:0, attempts:0, videos:0};
-    // sessions: add unseen ids
-    const sIds=new Set(data.sessions.map(s=>s.id));
-    (Array.isArray(inc.sessions)?inc.sessions:[]).forEach(s=>{ s=normSession(s); if(s && !sIds.has(s.id)){ data.sessions.push(s); sIds.add(s.id); c.sessions++; } });
-    // songs: add unseen; on id collision keep the newer record
-    const isPristineDefault=(s)=>{ const {updated, ...rest}=s; return JSON.stringify(rest)===JSON.stringify(DEFAULT_S1); };
-    (Array.isArray(inc.songs)?inc.songs:[]).forEach(s=>{ s=normSong(s); if(!s) return;
-      const i=data.songs.findIndex(x=>x.id===s.id);
-      if(i<0){ data.songs.push(s); c.songsAdded++; return; }
-      const cur=data.songs[i];
-      const newer = (s.updated||0) > (cur.updated||0) || (!cur.updated && !s.updated && isPristineDefault(cur) && !isPristineDefault(s));
-      if(newer){ data.songs[i]=s; c.songsUpdated++; }
-    });
-    // trainer attempts: dedupe by ts+string+fret, keep newest 4000
-    if(isObj(inc.quiz) && Array.isArray(inc.quiz.attempts)){
-      if(!isObj(data.quiz)||!Array.isArray(data.quiz.attempts)) data.quiz={attempts:[]};
-      const k=(a)=>a.ts+':'+a.s+':'+a.f; const seen=new Set(data.quiz.attempts.map(k));
-      inc.quiz.attempts.forEach(a=>{ if(isObj(a) && a.ts && !seen.has(k(a))){ data.quiz.attempts.push(a); seen.add(k(a)); c.attempts++; } });
-      data.quiz.attempts.sort((a,b)=>a.ts-b.ts); if(data.quiz.attempts.length>4000) data.quiz.attempts=data.quiz.attempts.slice(-4000);
-    }
-    // video notes: add entries we don't have
-    if(isObj(inc.videos)){ if(!isObj(data.videos)) data.videos={};
-      Object.entries(inc.videos).forEach(([n,v])=>{ if(isObj(v) && !data.videos[n]){ data.videos[n]=v; c.videos++; } }); }
-    // prefs: only fill ones not set here
-    if(isObj(inc.prefs)){ Object.entries(inc.prefs).forEach(([k,v])=>{ if(!(k in data.prefs)) data.prefs[k]=v; }); }
+    merged.sessions.forEach(s=>{ if(!bS.has(s.id)) c.sessions++; });
+    merged.songs.forEach(s=>{ if(!bG.has(s.id)) c.songsAdded++; else if(bG.get(s.id)!==SM.stable(s)) c.songsUpdated++; });
+    const bA=new Set(((before.quiz&&before.quiz.attempts)||[]).map(a=>a.id));
+    ((merged.quiz&&merged.quiz.attempts)||[]).forEach(a=>{ if(!bA.has(a.id)) c.attempts++; });
+    const bV=before.videos||{}; Object.keys(merged.videos||{}).forEach(n=>{ if(!bV[n]) c.videos++; });
+    data=merged;
     return c;
   }
   function importJSON(file, cb){
@@ -143,5 +173,6 @@ window.Store = (() => {
   }
   load();
   return {get:()=>data, save, uid, esc, localDate, exportJSON, exportRaw, importJSON, mergeData, load, startFresh, saveFile, isIOS,
+    touch, remove, setPref, replaceData, stamp, onChange:(fn)=>changeListeners.push(fn), KEY,
     loadFailed:()=>loadFailed, backupKey:()=>rawBackupKey, setErrorHandler:(fn)=>{ onError=fn; }};
 })();

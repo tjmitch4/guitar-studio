@@ -54,13 +54,13 @@ window.App = (() => {
     document.querySelector('.tabs').addEventListener('keydown',(e)=>{ if(e.key!=='ArrowRight'&&e.key!=='ArrowLeft') return; const i=TABS.indexOf(current); const n=TABS[(i+(e.key==='ArrowRight'?1:TABS.length-1))%TABS.length]; showTab(n); document.querySelector(`.tabs button[data-tab="${n}"]`).focus(); });
     const prefs=window.Store.get().prefs||{};
     document.getElementById('useFlats').checked=!!prefs.useFlats;
-    document.getElementById('useFlats').addEventListener('change',(e)=>{ const d=window.Store.get(); d.prefs=d.prefs||{}; d.prefs.useFlats=e.target.checked; window.Store.save(); });
+    document.getElementById('useFlats').addEventListener('change',(e)=>{ if(applyingRemote) return; window.Store.setPref('useFlats', e.target.checked); window.Store.save(); });
     const snd=document.getElementById('soundOn'); snd.checked=prefs.sound!==false; window.Tone.setEnabled(snd.checked);
-    snd.addEventListener('change',(e)=>{ window.Tone.setEnabled(e.target.checked); const d=window.Store.get(); d.prefs=d.prefs||{}; d.prefs.sound=e.target.checked; window.Store.save(); });
+    snd.addEventListener('change',(e)=>{ window.Tone.setEnabled(e.target.checked); if(applyingRemote) return; window.Store.setPref('sound', e.target.checked); window.Store.save(); });
     const tp=document.getElementById('tonePreset');
     tp.innerHTML=Object.entries(window.Tone.PRESETS).map(([k,p])=>`<option value="${k}">${p.label}</option>`).join('');
     tp.value=(prefs.tone && window.Tone.PRESETS[prefs.tone])? prefs.tone : 'acoustic'; window.Tone.setPreset(tp.value);
-    tp.addEventListener('change',()=>{ window.Tone.setPreset(tp.value); const d=window.Store.get(); d.prefs=d.prefs||{}; d.prefs.tone=tp.value; window.Store.save(); window.Tone.strum([-1,0,2,2,2,0]); });
+    tp.addEventListener('change',()=>{ window.Tone.setPreset(tp.value); window.Store.setPref('tone', tp.value); window.Store.save(); window.Tone.strum([-1,0,2,2,2,0]); });
     document.getElementById('toneTest').addEventListener('click',()=>{ window.Tone.strum([-1,0,2,2,2,0]); setTimeout(()=>window.Tone.strum([0,2,2,1,0,0]),1100); setTimeout(()=>window.Tone.arpeggio([-1,3,2,0,1,0],0.16),2300); });
     // Initialise each tab on its own so one failure can't leave the rest of the app dead.
     ['FretboardUI','TheoryUI','SongsUI','PracticeUI','TrainerUI','VideosUI','TunerUI'].forEach(n=>{
@@ -70,6 +70,22 @@ window.App = (() => {
     const h=location.hash.replace('#','');
     showTab(TABS.includes(h)?h:'trainer',{push:false});
   });
+  // Sync (or an import) brought in new data: re-render everything that shows stored data, and apply synced settings.
+  let applyingRemote=false;
+  function refreshData(){
+    const prefs=window.Store.get().prefs||{};
+    applyingRemote=true;
+    try{
+      const uf=document.getElementById('useFlats');
+      if(uf && uf.checked!==!!prefs.useFlats){ uf.checked=!!prefs.useFlats; uf.dispatchEvent(new Event('change')); } // listeners re-spell notes; the pref isn't re-saved
+      const snd=document.getElementById('soundOn');
+      if(snd && snd.checked!==(prefs.sound!==false)){ snd.checked=prefs.sound!==false; window.Tone.setEnabled(snd.checked); }
+      const tp=document.getElementById('tonePreset');
+      if(tp && prefs.tone && window.Tone.PRESETS[prefs.tone] && tp.value!==prefs.tone){ tp.value=prefs.tone; window.Tone.setPreset(prefs.tone); }
+    }finally{ applyingRemote=false; }
+    [()=>window.PracticeUI.refresh(), ()=>window.SongsUI.render(), ()=>window.TrainerUI.render(), ()=>window.VideosUI.refresh(false)]
+      .forEach(fn=>{ try{ fn(); }catch(e){ console.error('Refresh after sync failed', e); } });
+  }
   // Back/forward (and edited URLs) switch tabs
   window.addEventListener('hashchange',()=>{ const h=location.hash.slice(1); if(TABS.includes(h) && h!==current) showTab(h,{push:false}); });
 
@@ -101,5 +117,5 @@ window.App = (() => {
     });
     window.addEventListener('load',()=>{ navigator.serviceWorker.register('sw.js').catch(e=>console.warn('Service worker registration failed',e)); });
   }
-  return {showTab, toast};
+  return {showTab, toast, refreshData};
 })();
