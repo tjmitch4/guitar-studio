@@ -118,6 +118,13 @@ connected. The panel has the status, last sync time, **Sync now**, a link to the
 - **Trainer answers:** only ever added. Both devices' answers are combined without duplicates, capped at the
   newest 4000. **Reset stats** resets them on every device.
 - **Settings:** each one keeps whichever device changed it last.
+- Every in-app delete that removes a file is also listed in `settings.md` (`deleteLog`), so a device that
+  connects fresh (or reconnects) still applies deletes made elsewhere.
+- **Safety net for a wiped or recreated repo:** if `guitar/settings.md` disappears, or more than 3 records (and
+  more than a quarter of the files this device knew about) vanish at once with no delete records, the app
+  deletes nothing locally, re-uploads everything, and the sync panel says "GitHub folder looked empty — restored
+  it from this device". Connect and Disconnect also forget this device's list of last-synced files, so a new
+  connection never reads missing files as deletes.
 - Nothing syncs while this device's saved data can't be read.
 
 ## Updating the app

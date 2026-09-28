@@ -94,7 +94,7 @@ window.Sync = (() => {
           changedLocal=true;
         }
         const snap=JSON.parse(JSON.stringify(S.get())); // edits made while we upload are picked up by the next round
-        const plan=await P.planWrites(snap, meta, tree, r.keyPaths, r.bad, {sha:P.gitBlobSha, today:S.localDate(), device:deviceLabel()});
+        const plan=await P.planWrites(snap, meta, tree, r.keyPaths, r.bad, {sha:P.gitBlobSha, today:S.localDate(), device:deviceLabel(), deleteLog:r.deleteLog});
         let newHead=head, newTree=treeSha;
         if(plan.writes.length){
           newTree=await GH.createTree(treeSha, plan.writes);
@@ -105,7 +105,9 @@ window.Sync = (() => {
             throw e;
           }
         }
-        saveMeta({head:newHead, treeSha:newTree, files:plan.files, lastSyncedAt:Date.now(), lastError:null, note:undefined, authError:undefined,
+        if(r.wiped){ console.warn('Guitar Studio sync: the GitHub folder looked wiped — deleted nothing here and restored it from this device.'); }
+        saveMeta({head:newHead, treeSha:newTree, files:plan.files, deletes:plan.deletes, lastSyncedAt:Date.now(), lastError:null, note:undefined, authError:undefined,
+          restoredAt:r.wiped?Date.now():meta.restoredAt,
           warnings:r.warnings.length?r.warnings:(plan.files && Object.values(plan.files).some(f=>f.bad)?meta.warnings:undefined)});
         if(plan.drop.length) dropTombstones(plan.drop);
         break;
@@ -201,6 +203,7 @@ window.Sync = (() => {
       const warn=(meta.warnings||[]);
       h=`<p><span class="sync-dot" data-state="${v}"></span> <b>${esc(st)}</b></p>
         <p class="hint">Last synced: ${esc(ago(meta.lastSyncedAt))}${meta.note&&v==='offline'?`<br>${esc(meta.note)}`:''}${meta.lastError&&v==='error'?`<br><span class="sync-err">${esc(meta.lastError)}</span>`:''}</p>
+        ${meta.restoredAt && Date.now()-meta.restoredAt<7*86400000 ? `<p class="sync-note"><b>GitHub folder looked empty — restored it from this device</b> (${esc(new Date(meta.restoredAt).toLocaleString())}). Nothing was deleted here.</p>`:''}
         ${warn.length?`<div class="hint"><b>Skipped files</b> (couldn't be read, left untouched on GitHub — fix or delete them there):<ul>${warn.map(w=>`<li>${esc(w)}</li>`).join('')}</ul></div>`:''}
         <p class="hint">Repo: ${where}. One commit per sync; only changed files are written.</p>
         <div class="btn-row"><button type="button" class="btn" id="syncNowBtn" ${v==='syncing'||v==='blocked'?'disabled':''}>Sync now</button><a class="btn ghost" href="${esc(GH.repoUrl())}" target="_blank" rel="noopener">Open repo</a><button type="button" class="btn ghost" id="syncDisconnect">Disconnect</button></div>
@@ -214,9 +217,19 @@ window.Sync = (() => {
     on('syncNowBtn',()=>syncNow({manual:true}));
     on('syncDisconnect',()=>{
       if(!confirm('Disconnect GitHub in this browser?\n\nYour data stays on this device and in the repo. Lift Studio shares the same token, so it disconnects too.')) return;
-      GH.clearToken(); status='idle'; failures=0; nextTry=0; saveMeta({authError:undefined, lastError:null, note:undefined}); emit(); window.App && window.App.toast('Disconnected from GitHub');
+      disconnect(); window.App && window.App.toast('Disconnected from GitHub');
     });
   }
+  // Connecting (or disconnecting) starts from a clean slate: forget which files this device last saw, so a
+  // recreated/emptied repo is never read as "everything was deleted on another device". Local data is untouched.
+  function resetCache(){ saveMeta({files:{}, head:undefined, treeSha:undefined, deletes:undefined, warnings:undefined, restoredAt:undefined}); }
+  function disconnect(){ GH.clearToken(); resetCache(); status='idle'; failures=0; nextTry=0; saveMeta({authError:undefined, lastError:null, note:undefined}); emit(); }
+  async function validateAndSave(tok){
+    await GH.validate(tok);
+    GH.setToken(tok); resetCache();
+    status='idle'; failures=0; nextTry=0; saveMeta({authError:undefined, lastError:null, note:undefined}); emit();
+  }
+  async function connectToken(tok){ await validateAndSave(tok); return syncNow({manual:true}); }
   let checking=false;
   async function connect(){
     const dlg=document.getElementById('syncDialog'); const inp=dlg.querySelector('#ghToken'), btn=dlg.querySelector('#ghConnect'), err=dlg.querySelector('#ghErr');
@@ -226,12 +239,10 @@ window.Sync = (() => {
     if(checking) return; checking=true;
     err.textContent=''; btn.disabled=true; btn.textContent='Checking…';
     try{
-      await GH.validate(tok);
-      GH.setToken(tok); inp.value='';
-      status='idle'; failures=0; nextTry=0; saveMeta({authError:undefined, lastError:null, note:undefined});
+      await validateAndSave(tok); inp.value='';
       btn.disabled=false; btn.textContent='Connect';
       window.App && window.App.toast('Connected to GitHub');
-      emit(); syncNow({manual:true});
+      syncNow({manual:true});
     }catch(e){
       btn.disabled=false; btn.textContent='Connect';
       err.textContent = e && e.kind==='network' ? 'Can\'t reach GitHub — check your connection and try again.' : ((e && e.message) || 'Could not check the token.');
@@ -249,7 +260,7 @@ window.Sync = (() => {
     listeners.push(renderButton, renderPanel);
     renderButton();
     // Lift Studio (same origin) may connect/disconnect the shared token in another tab.
-    window.addEventListener('storage',(e)=>{ if(e.key===C.TOKEN_KEY){ saveMeta({authError:undefined}); failures=0; nextTry=0; emit(); if(GH.token() && C.SYNC_AUTO!==false) syncNow(); } });
+    window.addEventListener('storage',(e)=>{ if(e.key===C.TOKEN_KEY){ resetCache(); saveMeta({authError:undefined}); failures=0; nextTry=0; emit(); if(GH.token() && C.SYNC_AUTO!==false) syncNow(); } });
     if(C.SYNC_AUTO===false) return; // test harness drives sync by hand
     S.onChange(()=>schedule());
     document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='visible') syncNow(); });
@@ -260,5 +271,5 @@ window.Sync = (() => {
   }
   document.addEventListener('DOMContentLoaded',()=>setTimeout(init,0)); // after the tabs have initialised
 
-  return {syncNow, schedule, view, openPanel, deviceLabel, onStatus:(fn)=>listeners.push(fn), _meta:()=>meta, _reloadMeta:()=>{ meta=loadMeta(); status='idle'; failures=0; nextTry=0; }};
+  return {syncNow, schedule, view, openPanel, deviceLabel, connectToken, disconnect, onStatus:(fn)=>listeners.push(fn), _meta:()=>meta, _reloadMeta:()=>{ meta=loadMeta(); status='idle'; failures=0; nextTry=0; }};
 })();

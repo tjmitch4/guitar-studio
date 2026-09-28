@@ -249,9 +249,12 @@
     if(kind==='settings'){
       if(!isObj(j)) throw new Error('settings is not an object');
       const tomb=isObj(j.tombstones)?j.tombstones:{};
-      return {kind, prefs:isObj(j.prefs)?j.prefs:{}, prefsMeta:isObj(j.prefsMeta)?j.prefsMeta:{},
+      const out={kind, prefs:isObj(j.prefs)?j.prefs:{}, prefsMeta:isObj(j.prefsMeta)?j.prefsMeta:{},
         quizResetAt:typeof j.quizResetAt==='number'?j.quizResetAt:0,
         tombstones:{sessions:Array.isArray(tomb.sessions)?tomb.sessions.filter(isObj):[], songs:Array.isArray(tomb.songs)?tomb.songs.filter(isObj):[]}};
+      const dl=isObj(j.deleteLog)?j.deleteLog:{}; const logOf=(a)=>Array.isArray(a)?a.filter(x=>isObj(x)&&typeof x.id==="string"&&typeof x.at==="number"):[];
+      out.deleteLog={sessions:logOf(dl.sessions), songs:logOf(dl.songs)};
+      return out;
     }
     return null;
   }

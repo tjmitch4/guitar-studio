@@ -126,6 +126,8 @@
       for(const p of Object.keys(changes)){ if(changes[p]==null) delete map[p]; else map[p]=await putBlob(changes[p]); }
       st.ref=await commitMap(map, message||'edit', st.ref); save();
     },
+    // A brand-new history (repo deleted and recreated): only README + .gitkeeps, unrelated to the old commits.
+    async recreate(){ const map={'README.md':await putBlob('# studio-data\n'),'lift/.gitkeep':await putBlob(''), 'guitar/.gitkeep':await putBlob('')}; st.ref=await commitMap(map,'Initial commit',null); save(); },
     beforeRefUpdate(fn){ hook=fn; },
     calls(filter){ return calls.filter(c=>!filter || (typeof filter==='function'?filter(c):c.path.includes(filter))); },
     clearCalls(){ calls=[]; },

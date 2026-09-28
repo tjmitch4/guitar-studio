@@ -303,6 +303,7 @@ button.lvl{display:block;width:100%;color:var(--text)}
 .sync-token label{display:block;font-weight:600;margin-bottom:.3rem}
 .sync-token .btn-row input{flex:1 1 12rem;min-width:0;background:var(--panel2);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:.45rem .6rem;font:inherit}
 .sync-err{color:var(--danger);min-height:1em}
+.sync-note{border-left:3px solid var(--accent2);padding:.3rem .6rem;background:var(--panel2);border-radius:4px}
 .sync-panel code{overflow-wrap:anywhere}
 .sync-panel a{color:var(--sel)}
 .sync-panel a.btn{text-decoration:none;color:inherit}

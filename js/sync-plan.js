@@ -69,6 +69,8 @@
     const localById={}; REC.forEach(k=>{ localById[k]=new Map((local[k]||[]).map(r=>[r.id,r])); });
     const remote={sessions:[], songs:[], deleted:{sessions:[], songs:[], videos:[]}, prefs:{}, prefsMeta:{}};
     let attempts=null, resetAt=0, videos=null, handEdits=0;
+    // Deletes recorded in settings.md (every device's in-app deletes that removed a file), plus what this device knew.
+    const log=new Map(Object.entries((meta&&meta.deletes)||{}).map(([k,v])=>[k,+v||0]));
     tree.forEach((sha,path)=>{
       const kind=MD.kindOf(path); if(!kind) return;
       const m=files[path];
@@ -93,6 +95,7 @@
       else if(kind==='settings'){
         remote.prefs=p.prefs; remote.prefsMeta=p.prefsMeta; resetAt=p.quizResetAt;
         remote.deleted.sessions=p.tombstones.sessions; remote.deleted.songs=p.tombstones.songs; add('settings',path);
+        REC.forEach(k=>p.deleteLog[k].forEach(d=>{ const key=keyOf(k,d.id); log.set(key, Math.max(log.get(key)||0, d.at)); }));
       }
     });
     remote.sessions=[...recs.sessions.values()]; remote.songs=[...recs.songs.values()];
@@ -100,15 +103,33 @@
     if(videos) remote.videos=videos;
     const merged=keepOrder(SM.merge(local, remote), local);
 
-    // Files that vanished remotely since the last sync = deleted on another device.
-    let remoteDeleted=0;
+    // Files that vanished remotely since the last sync = deleted on another device...
+    const vanished=[]; let known=0, settingsGone=false;
     Object.keys(files).forEach(path=>{
-      const m=files[path]; if(!m.key || tree.has(path)) return;
-      const pk=parseKey(m.key); if(!pk || keyPaths.has(m.key)) return; // renamed/moved, not deleted
+      const m=files[path];
+      if(m.key==='settings' && !tree.has(path)) settingsGone=true;
+      const pk=parseKey(m.key); if(!pk) return;
+      known++;
+      if(tree.has(path) || keyPaths.has(m.key)) return; // still there, or renamed/moved
+      vanished.push({path, m, pk});
+    });
+    // ...unless the folder was wiped or the repo recreated: settings.md gone, or lots of records gone at once
+    // with no delete records for them. Then delete NOTHING here; the plan re-uploads everything.
+    const unexplained=vanished.filter(v=>!log.has(v.m.key)).length;
+    const wiped=settingsGone || (unexplained>3 && unexplained>0.25*known);
+    let remoteDeleted=0;
+    if(!wiped) vanished.forEach(({m,pk})=>{
       const i=merged[pk.kind].findIndex(r=>r.id===pk.id); if(i<0) return;
       if((+merged[pk.kind][i].updatedAt||0)===(+m.u||0)){ merged[pk.kind].splice(i,1); remoteDeleted++; }
     });
-    return {merged, keyPaths, bad, warnings, remoteDeleted, handEdits};
+    // Records this device never synced (fresh connection) that another device deleted after their last edit.
+    const inMeta=new Set(Object.values(files).map(m=>m.key).filter(Boolean));
+    REC.forEach(kind=>{
+      merged[kind]=merged[kind].filter(r=>{ const key=keyOf(kind,r.id);
+        if(inMeta.has(key) || keyPaths.has(key) || !log.has(key) || log.get(key)<(+r.updatedAt||0)) return true;
+        remoteDeleted++; return false; });
+    });
+    return {merged, keyPaths, bad, warnings, remoteDeleted, handEdits, wiped, deleteLog:log};
   }
 
   // Step 3: the files to write/delete for `data` (a snapshot of the merged local data).
@@ -118,6 +139,7 @@
     const files=(meta&&meta.files)||{};
     const P=MD.PATHS;
     const writes=[], newFiles={}, drop=[];
+    const log=new Map(opts.deleteLog||[]);
     const pathKey=new Map(); keyPaths.forEach((ps,k)=>ps.forEach(p=>pathKey.set(p,k)));
     const metaPathOf=new Map(); Object.keys(files).forEach(p=>{ const k=files[p].key; if(k && !metaPathOf.has(k)) metaPathOf.set(k,p); });
     tree.forEach((sha,path)=>{
@@ -149,6 +171,7 @@
       for(const t of ((data.deleted&&data.deleted[kind])||[])){
         const ps=keyPaths.get(keyOf(kind,t.id))||[];
         ps.forEach(del);
+        if(ps.some(p=>!bad.has(p))){ const k=keyOf(kind,t.id); log.set(k, Math.max(log.get(k)||0, +t.updatedAt||0)); } // remembered so other devices can tell a delete from a wipe
         if(!isDeterministicId(t.id) && ps.every(p=>!bad.has(p))) drop.push({kind, id:t.id, updatedAt:t.updatedAt});
       }
     }
@@ -165,12 +188,14 @@
       if(data.quiz && data.quiz.resetAt) s.quizResetAt=data.quiz.resetAt;
       const tomb={}; REC.forEach(k=>{ const l=((data.deleted&&data.deleted[k])||[]).filter(t=>isDeterministicId(t.id)).map(t=>({id:t.id, deleted:true, updatedAt:+t.updatedAt||0})).sort((a,b)=>a.id<b.id?-1:a.id>b.id?1:0); if(l.length) tomb[k]=l; });
       if(Object.keys(tomb).length) s.tombstones=tomb;
+      const dl={}; REC.forEach(k=>{ const l=[...log].filter(([key])=>key.startsWith(KEYP[k])).map(([key,at])=>({id:key.slice(KEYP[k].length), at})).sort((a,b)=>a.id<b.id?-1:a.id>b.id?1:0); if(l.length) dl[k]=l; });
+      if(Object.keys(dl).length) s.deleteLog=dl;
       await put(P.settings, MD.settingsMd(s), {key:'settings'});
     }
     const changed=writes.length;
     // the coaching summary: regenerated whenever data changed (or if it's missing)
     if(changed || !tree.has(P.progress)) await put(P.progress, MD.progressMd(data, {today:opts.today, device:opts.device}), {key:'progress'});
-    return {writes, files:newFiles, changed, drop};
+    return {writes, files:newFiles, changed, drop, deletes:Object.fromEntries(log)};
   }
 
   // git's blob id: sha1("blob <byte length>\0<content>")

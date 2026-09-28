@@ -251,6 +251,44 @@
     ['B','C','D'].forEach(d=>ok(SM.equal(snap.A, snap[d]), 'A != '+d+'\n'+SM.canonical(snap.A)+'\n'+SM.canonical(snap[d])));
     eq(ids(sessionsInRepo()), ids(snap.A.sessions)); const before=M.commitCount(); for(const d of ['A','B']){ useDevice(d); await sync(); } eq(M.commitCount(),before,'idle devices make no commits');
   });
+  // ---------------- wiped / recreated repo safety net ----------------
+  const addSessions=(n,tag)=>{ for(let i=0;i<n;i++) S.get().sessions.push({id:tag+String(i).padStart(3,'0')+'wipemfz'+tag,date:'2026-09-1'+(i%9),minutes:10+i,cats:['Technique'],notes:tag+' '+i,created:'',updatedAt:S.stamp(0)}); S.save(); };
+  await test('Wiped guitar/ folder: nothing is deleted locally, everything is re-uploaded, and the panel says so', async()=>{
+    useDevice('A'); addSessions(8,'w'); eq(await sync(),'synced');
+    const want=JSON.parse(JSON.stringify(S.get())); const n=want.sessions.length; ok(n>8);
+    const wipe={}; Object.keys(M.files()).filter(p=>p.startsWith('guitar/') && p!=='guitar/.gitkeep').forEach(p=>wipe[p]=null); await M.commitFiles(wipe,'oops: emptied guitar/');
+    eq(await sync(),'synced'); eq(S.get().sessions.length, n, 'no local records deleted'); ok(SM.equal(S.get(), want),'local data unchanged');
+    eq(sessionsInRepo().length, n, 'all sessions re-uploaded'); ok(M.files()['guitar/settings.md'] && M.files()['guitar/PROGRESS.md']);
+    ok(Sync._meta().restoredAt>0,'restore notice recorded');
+    useDevice('B'); eq(await sync(),'synced'); eq(S.get().sessions.length, n, 'other devices keep everything too');
+  });
+  await test('Repo recreated from scratch, then disconnect + reconnect: no deletions inferred, local data re-uploaded', async()=>{
+    useDevice('A'); const want=JSON.parse(JSON.stringify(S.get()));
+    Sync.disconnect(); eq(Object.keys(Sync._meta().files||{}).length,0,'disconnect clears the synced-files cache'); eq(Sync.view(),'notconnected');
+    await M.recreate(); await Sync.connectToken(TOKEN); eq(Object.keys(Sync._meta().files||{}).length>0, true);
+    ok(SM.equal(S.get(), want),'local data unchanged'); eq(sessionsInRepo().length, want.sessions.length);
+    useDevice('B'); eq(await sync(),'synced'); ok(SM.equal(S.get(), want),'B (old cache, recreated repo) keeps everything');
+  });
+  await test('Bulk in-app delete (most sessions) + trainer reset still propagate to other devices', async()=>{
+    useDevice('A'); const all=S.get().sessions.map(s=>s.id); const kill=all.slice(0, all.length-2);
+    kill.forEach(id=>S.remove('sessions',id)); S.get().quiz={attempts:[], resetAt:S.stamp(Date.now())}; S.save(); eq(await sync(),'synced');
+    eq(sessionsInRepo().length,2); ok(!Object.keys(M.files()).some(p=>p.startsWith('guitar/trainer/')));
+    useDevice('B'); const r0=Sync._meta().restoredAt||0; eq(await sync(),'synced');
+    eq(ids(S.get().sessions), ids(all.slice(-2).map(id=>({id})))); eq(S.get().quiz.attempts.length,0); eq(Sync._meta().restoredAt||0, r0, 'not mistaken for a wipe');
+    eq(sessionsInRepo().length,2,'deleted files stay deleted');
+  });
+  await test('Reconnect after deletes made elsewhere while disconnected: the deletes still apply', async()=>{
+    useDevice('B'); Sync.disconnect();
+    useDevice('A'); addSessions(3,'x'); eq(await sync(),'synced'); useDevice('B'); await Sync.connectToken(TOKEN); ok(S.get().sessions.some(s=>s.id.startsWith('x000')));
+    Sync.disconnect(); useDevice('A'); ['x000wipemfzx','x001wipemfzx'].forEach(id=>S.remove('sessions',id)); S.save(); eq(await sync(),'synced');
+    useDevice('B'); await Sync.connectToken(TOKEN); ok(!S.get().sessions.some(s=>s.id==='x000wipemfzx'||s.id==='x001wipemfzx'),'deleted on B'); ok(S.get().sessions.some(s=>s.id==='x002wipemfzx'));
+    ok(!sessionsInRepo().some(s=>s.id==='x000wipemfzx'),'not resurrected');
+  });
+  await test('Many session files vanish at once with settings.md intact and no delete records → treated as a wipe, restored', async()=>{
+    useDevice('A'); addSessions(6,'v'); eq(await sync(),'synced'); const n=S.get().sessions.length;
+    const gone={}; Object.keys(M.files()).filter(p=>p.startsWith('guitar/sessions/')).slice(0,5).forEach(p=>gone[p]=null); await M.commitFiles(gone,'bad script');
+    const r0=Sync._meta().restoredAt||0; eq(await sync(),'synced'); eq(S.get().sessions.length,n,'nothing deleted'); eq(sessionsInRepo().length,n,'restored'); ok((Sync._meta().restoredAt||0)>r0,'notice');
+  });
   await test('The token is never stored anywhere but its own key, and never written to the repo', async()=>{
     Object.keys(localStorage).filter(k=>k!==C.TOKEN_KEY && !k.startsWith('gsMock.')).forEach(k=>ok(!(localStorage.getItem(k)||'').includes('github_pat_'), 'token in '+k));
     Object.values(M.files()).forEach(t=>ok(!t.includes('github_pat_'),'token in a repo file'));
